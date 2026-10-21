@@ -674,7 +674,6 @@ struct SupacodeApp: App {
         .appKeyboardShortcut(AppShortcuts.commandPalette.effective(from: store.settings.shortcutOverrides))
         .help("Command Palette")
       }
-      UpdateCommands(store: store.scope(state: \.updates, action: \.updates))
       CommandGroup(replacing: .singleWindowList) {
         Button("Supacode") {
           NSApplication.shared.surfaceMainWindow()

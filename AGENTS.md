@@ -49,7 +49,7 @@ Supacode is a macOS terminal emulator that for running multiple coding agents in
 
 ## Rules
 
-- After a task, ensure the app builds: `make build-app`
+- After a task, ensure the app builds and install it: `make install-dev-build` (builds, then replaces `/Applications/supacode.app`). Do this after each build. Tell the user to restart Supacode to use the new build.
 - Automatically commit your changes and your changes only. Do not use `git add .`
 - Before you go on your task, check the current git branch name, if it's something generic like an animal name, name it accordingly. Do not do this for main branch
 - Do not open a pull request unless the user explicitly asks for one. Commit to the working branch and let the user decide when to push and open a PR.

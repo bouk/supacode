@@ -65,14 +65,6 @@
 	<string>$(POSTHOG_HOST)</string>
 	<key>SentryDSN</key>
 	<string>$(SENTRY_DSN)</string>
-	<key>SUFeedURL</key>
-    <string>https://supacode.sh/download/latest/appcast.xml</string>
-	<key>SUPublicEDKey</key>
-	<string>eBdTbl+6sR8gxO1zyzyvdQHuJrXMLxD31oCc+JoW5jo=</string>
-	<key>SUEnableAutomaticChecks</key>
-	<true/>
-	<key>SUAutomaticallyUpdate</key>
-	<true/>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

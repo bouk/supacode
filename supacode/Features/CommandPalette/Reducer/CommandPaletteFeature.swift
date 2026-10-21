@@ -225,13 +225,8 @@ struct CommandPaletteFeature {
 
   /// The always-present global actions, shown regardless of selection.
   static func globalActionItems() -> [CommandPaletteItem] {
+    // Fork: no Check for Updates item; the update feed is removed.
     [
-      CommandPaletteItem(
-        id: CommandPaletteItemID.globalCheckForUpdates,
-        title: "Check for Updates",
-        subtitle: nil,
-        kind: .checkForUpdates
-      ),
       CommandPaletteItem(
         id: CommandPaletteItemID.globalOpenSettings,
         title: "Open Settings",

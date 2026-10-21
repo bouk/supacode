@@ -14,7 +14,6 @@ struct CommandPaletteFeatureTests {
   @Test func commandPaletteItems_onlyGlobalWhenEmpty() {
     let items = CommandPaletteFeature.commandPaletteItems(from: RepositoriesFeature.State())
     var expectedIDs = [
-      "global.check-for-updates",
       "global.open-settings",
       "global.open-repository",
       "global.add-remote-repository",

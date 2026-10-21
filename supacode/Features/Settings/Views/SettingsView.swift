@@ -167,9 +167,6 @@ private struct SettingsSidebarView: View {
       Label("License", systemImage: "key")
         .appFont(.body)
         .tag(SettingsSection.license)
-      Label("Updates", systemImage: "arrow.down.circle")
-        .appFont(.body)
-        .tag(SettingsSection.updates)
 
       let localRepositories = settingsStore.repositorySummaries.filter { !$0.isRemote }
       let remoteRepositories = settingsStore.repositorySummaries.filter(\.isRemote)
