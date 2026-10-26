@@ -23,6 +23,7 @@ enum GitOperation: String {
   case supaignoreLookup = "supaignore_lookup"
   case worktreeCopyPlan = "worktree_copy_plan"
   case fileStatus = "file_status"
+  case fileAttributes = "file_attributes"
   case stageFile = "stage_file"
   case unstageFile = "unstage_file"
   case discardFile = "discard_file"
@@ -1370,6 +1371,29 @@ struct GitClient {
   }
 
   /// First parseable remote (origin preferred), forge-blind.
+  nonisolated func generatedFileAttributes(at root: URL, paths: [String]) async -> [String: Bool] {
+    var attributes: [String: Bool] = [:]
+    // Keep argv bounded for large pull requests; NUL output handles unusual names.
+    for start in stride(from: 0, to: paths.count, by: 100) {
+      if Task.isCancelled { return attributes }
+      let batch = Array(paths[start..<min(start + 100, paths.count)])
+      guard
+        let data = try? await runGitData(
+          operation: .fileAttributes,
+          arguments: ["-C", root.path(percentEncoded: false), "check-attr", "-z", "linguist-generated", "--"] + batch)
+      else { continue }
+      let fields = String(decoding: data, as: UTF8.self).split(separator: "\0", omittingEmptySubsequences: false)
+      for index in stride(from: 0, to: max(0, fields.count - 2), by: 3) {
+        switch fields[index + 2] {
+        case "set", "true": attributes[String(fields[index])] = true
+        case "unset", "false": attributes[String(fields[index])] = false
+        default: break
+        }
+      }
+    }
+    return attributes
+  }
+
   nonisolated func remote(for repositoryRoot: URL) async -> GitRemote? {
     if nativeReferences {
       return (try? NativeGitRepository.remoteURLs(at: repositoryRoot))?.compactMap(GitRemote.parse).first

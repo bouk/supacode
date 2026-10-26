@@ -112,6 +112,7 @@ struct WorktreeDetailView: View {
         isFolder: selectedRow?.isFolder == true,
         isCheckingPullRequest: isCheckingPullRequest,
         pullRequest: inspectorPullRequest,
+        diffRequest: Self.diffRequest(selectedWorktree: selectedWorktree, pullRequest: inspectorPullRequest),
         repositoriesStore: repositoriesStore,
         capabilities: inspectorCapabilities,
         terminalManager: terminalManager,
@@ -146,6 +147,16 @@ struct WorktreeDetailView: View {
       }
       return nil
     }
+  }
+
+  /// The diff window value for the inspector's pull request, nil for a folder
+  /// or when there is no pull request.
+  private static func diffRequest(
+    selectedWorktree: Worktree?,
+    pullRequest: ForgePullRequest?
+  ) -> PullRequestDiffRequest? {
+    guard let selectedWorktree, !selectedWorktree.isFolder, let pullRequest else { return nil }
+    return PullRequestDiffRequest(worktree: selectedWorktree, pullRequest: pullRequest)
   }
 
   /// Capabilities of the selected repo's resolved forge; GitHub until resolved.

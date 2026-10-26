@@ -190,6 +190,7 @@ nonisolated struct GithubCLIClient: Sendable {
   var mergePullRequest: @Sendable (URL, GithubRemoteInfo?, Int, PullRequestMergeStrategy) async throws -> Void
   var closePullRequest: @Sendable (URL, GithubRemoteInfo?, Int) async throws -> Void
   var markPullRequestReady: @Sendable (URL, GithubRemoteInfo?, Int) async throws -> Void
+  var pullRequestDiff: @Sendable (GithubRemoteInfo, Int) async throws -> String
   var rerunFailedJobs: @Sendable (URL, Int) async throws -> Void
   var failedRunLogs: @Sendable (URL, Int) async throws -> String
   var runLogs: @Sendable (URL, Int) async throws -> String
@@ -216,6 +217,7 @@ nonisolated extension GithubCLIClient: DependencyKey {
       mergePullRequest: mergePullRequestFetcher(shell: shell, resolver: resolver),
       closePullRequest: closePullRequestFetcher(shell: shell, resolver: resolver),
       markPullRequestReady: markPullRequestReadyFetcher(shell: shell, resolver: resolver),
+      pullRequestDiff: pullRequestDiffFetcher(shell: shell, resolver: resolver),
       rerunFailedJobs: rerunFailedJobsFetcher(shell: shell, resolver: resolver),
       failedRunLogs: failedRunLogsFetcher(shell: shell, resolver: resolver),
       runLogs: runLogsFetcher(shell: shell, resolver: resolver),
@@ -232,6 +234,7 @@ nonisolated extension GithubCLIClient: DependencyKey {
     mergePullRequest: { _, _, _, _ in },
     closePullRequest: { _, _, _ in },
     markPullRequestReady: { _, _, _ in },
+    pullRequestDiff: { _, _ in "" },
     rerunFailedJobs: { _, _ in },
     failedRunLogs: { _, _ in "" },
     runLogs: { _, _ in "" },
@@ -422,6 +425,20 @@ nonisolated private func markPullRequestReadyFetcher(
       resolver: resolver,
       arguments: arguments,
       repoRoot: repoRoot
+    )
+  }
+}
+
+nonisolated private func pullRequestDiffFetcher(
+  shell: ShellClient,
+  resolver: ForgeCLIExecutableResolver
+) -> @Sendable (GithubRemoteInfo, Int) async throws -> String {
+  { remote, pullRequestNumber in
+    try await runGh(
+      shell: shell,
+      resolver: resolver,
+      arguments: ["pr", "diff", "\(pullRequestNumber)", "--repo", repoSlug(for: remote), "--color", "never"],
+      repoRoot: nil
     )
   }
 }

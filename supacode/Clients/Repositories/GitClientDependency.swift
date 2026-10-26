@@ -107,6 +107,7 @@ nonisolated struct GitClientDependency: Sendable {
   var remoteInfo: @Sendable (_ repositoryRoot: URL) async -> GithubRemoteInfo?
   /// Forge-blind first remote (origin preferred): host, port, namespace path.
   var gitRemote: @Sendable (_ repositoryRoot: URL) async -> GitRemote?
+  var generatedFileAttributes: @Sendable (URL, [String]) async -> [String: Bool] = { _, _ in [:] }
   var setUpstreamBranch: @Sendable (_ branch: String, _ upstream: String, _ repoRoot: URL) async throws -> Void
   var unsetUpstreamBranch: @Sendable (_ branch: String, _ repoRoot: URL) async throws -> Void
   var upstreamBranchExists: @Sendable (_ ref: String, _ repoRoot: URL) async throws -> Bool
@@ -339,6 +340,9 @@ nonisolated extension GitClientDependency: DependencyKey {
       gitRemote: { repositoryRoot in
         await GitClient(shell: shell, nativeReferences: nativeLocal).remote(for: repositoryRoot)
       },
+      generatedFileAttributes: { root, paths in
+        await GitClient(shell: shell).generatedFileAttributes(at: root, paths: paths)
+      },
       setUpstreamBranch: { branch, upstream, repoRoot in
         try await GitClient(shell: shell).setUpstreamBranch(
           branch, to: upstream, for: repoRoot)
@@ -374,6 +378,7 @@ nonisolated extension GitClientDependency: DependencyKey {
     // No git status probe by default: fixtures with fake `/tmp/...` paths get a
     // no-op (nil) so the reducer never decorates. Status tests override this.
     value.fileStatus = { _ in nil }
+    value.generatedFileAttributes = { _, _ in [:] }
     // `liveValue` shells out to real `git clone`; a no-op default keeps an
     // unstubbed test from cloning over the network. Clone tests override this.
     value.cloneStream = { _, _, _, _ in

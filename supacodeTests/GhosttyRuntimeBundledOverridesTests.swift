@@ -24,6 +24,17 @@ struct GhosttyRuntimeBundledOverridesTests {
     #expect(runtime.backgroundColor().isLightColor)
   }
 
+  @Test func colorPaletteFollowsTheResolvedRuntimeColorScheme() {
+    let runtime = GhosttyRuntime(initialColorScheme: .light)
+    let light = runtime.colorPalette()
+    #expect(light.background.matchesTint(runtime.backgroundColor()))
+    runtime.setColorScheme(.dark)
+    let dark = runtime.colorPalette()
+    #expect(dark.background.matchesTint(runtime.backgroundColor()))
+    #expect(!light.background.matchesTint(dark.background))
+    #expect(dark.ansi.count == 16)
+  }
+
   // The launch-flash fix: `init` seeds the resolved scheme so the FIRST
   // `backgroundColor()` / `windowTintColor()` read (before any further
   // `setColorScheme`) is already scheme-correct, not Ghostty's default-light

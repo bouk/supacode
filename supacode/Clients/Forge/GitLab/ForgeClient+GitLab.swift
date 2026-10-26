@@ -47,6 +47,10 @@ extension ForgeClient {
         let project = try requireGitLabProject(project)
         try await gitlabCLI.markMergeRequestReady(worktreeRoot, project.host, project.path, number)
       },
+      pullRequestDiff: { project, number in
+        @Dependency(GitLabCLIClient.self) var gitlabCLI
+        return try await gitlabCLI.mergeRequestDiff(project.host, project.path, number)
+      },
       latestRun: { worktreeRoot, branch in
         @Dependency(GitClientDependency.self) var gitClient
         @Dependency(GitLabCLIClient.self) var gitlabCLI

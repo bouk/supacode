@@ -939,6 +939,11 @@ final class GhosttyRuntime {
     return Color(nsColor: NSColor(ghostty: color))
   }
 
+  func colorPalette() -> TerminalColorPalette {
+    guard let config else { return .system }
+    return TerminalColorPalette(config: config)
+  }
+
   func backgroundColor() -> NSColor {
     backgroundColorFromConfig() ?? NSColor.windowBackgroundColor
   }
@@ -1057,7 +1062,7 @@ extension NSColor {
     return (0.299 * red) + (0.587 * green) + (0.114 * blue)
   }
 
-  fileprivate convenience init(ghostty: ghostty_config_color_s) {
+  convenience init(ghostty: ghostty_config_color_s) {
     let red = Double(ghostty.r) / 255
     let green = Double(ghostty.g) / 255
     let blue = Double(ghostty.b) / 255

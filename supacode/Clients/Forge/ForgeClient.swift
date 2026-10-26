@@ -115,6 +115,8 @@ struct ForgeClient: Sendable {
   var mergePullRequest: @MainActor @Sendable (URL, ForgeProjectRef?, Int, PullRequestMergeStrategy) async throws -> Void
   var closePullRequest: @MainActor @Sendable (URL, ForgeProjectRef?, Int) async throws -> Void
   var markPullRequestReady: @MainActor @Sendable (URL, ForgeProjectRef?, Int) async throws -> Void
+  /// The proposal's unified diff, as the forge renders it.
+  var pullRequestDiff: @MainActor @Sendable (ForgeProjectRef, Int) async throws -> String
   var latestRun: @MainActor @Sendable (URL, String) async throws -> ForgeWorkflowRun?
   var rerunFailedJobs: @MainActor @Sendable (URL, Int) async throws -> Void
   var failedRunLogs: @MainActor @Sendable (URL, Int) async throws -> String
@@ -164,6 +166,13 @@ extension ForgeClient {
       markPullRequestReady: { worktreeRoot, project, number in
         @Dependency(GithubCLIClient.self) var githubCLI
         try await githubCLI.markPullRequestReady(worktreeRoot, project.flatMap(GithubRemoteInfo.init), number)
+      },
+      pullRequestDiff: { project, number in
+        @Dependency(GithubCLIClient.self) var githubCLI
+        guard let remote = GithubRemoteInfo(project) else {
+          throw GithubCLIError.commandFailed("Could not resolve the GitHub repository for this pull request.")
+        }
+        return try await githubCLI.pullRequestDiff(remote, number)
       },
       latestRun: { worktreeRoot, branch in
         @Dependency(GithubCLIClient.self) var githubCLI

@@ -9,6 +9,8 @@ struct WorktreeStatusInspectorContainer: View {
   let isFolder: Bool
   let isCheckingPullRequest: Bool
   let pullRequest: ForgePullRequest?
+  /// Opens the pull request's diff window from the Changes row.
+  let diffRequest: PullRequestDiffRequest?
   let repositoriesStore: StoreOf<RepositoriesFeature>
   let capabilities: ForgeCapabilities
   let terminalManager: WorktreeTerminalManager
@@ -27,6 +29,7 @@ struct WorktreeStatusInspectorContainer: View {
       case .git:
         WorktreeGitInspectorView(
           pullRequest: pullRequest,
+          diffRequest: diffRequest,
           isFolder: isFolder,
           isCheckingPullRequest: isCheckingPullRequest,
           capabilities: capabilities,
@@ -60,6 +63,7 @@ struct WorktreeStatusInspectorContainer: View {
 /// `Form` so it reads cleanly in a narrow inspector column.
 struct WorktreeGitInspectorView: View {
   let pullRequest: ForgePullRequest?
+  let diffRequest: PullRequestDiffRequest?
   let isFolder: Bool
   let isCheckingPullRequest: Bool
   let capabilities: ForgeCapabilities
@@ -70,6 +74,7 @@ struct WorktreeGitInspectorView: View {
       if !isFolder, let pullRequest {
         GitInspectorContent(
           pullRequest: pullRequest,
+          diffRequest: diffRequest,
           capabilities: capabilities,
           onPullRequestAction: onPullRequestAction
         )
@@ -161,8 +166,10 @@ private struct GitInspectorHeader: View {
 
 private struct GitInspectorContent: View {
   let pullRequest: ForgePullRequest
+  let diffRequest: PullRequestDiffRequest?
   let capabilities: ForgeCapabilities
   let onPullRequestAction: (RepositoriesFeature.PullRequestAction) -> Void
+  @Environment(\.openWindow) private var openWindow
 
   var body: some View {
     let checks = pullRequest.statusCheckRollup?.checks ?? []
@@ -182,10 +189,25 @@ private struct GitInspectorContent: View {
         LabeledContent("Author", value: pullRequest.authorLogin ?? "Someone")
         LabeledContent("Commits", value: (pullRequest.commitsCount ?? 0).formatted())
         if let additions = pullRequest.additions, let deletions = pullRequest.deletions {
-          LabeledContent("Changes") {
-            HStack(spacing: 6) {
-              Text("+\(additions.formatted())").foregroundStyle(.green)
-              Text("-\(deletions.formatted())").foregroundStyle(.red)
+          if let diffRequest {
+            Button {
+              openWindow(id: WindowID.pullRequestDiff, value: diffRequest)
+            } label: {
+              LabeledContent("Changes") {
+                HStack(spacing: 6) {
+                  PullRequestChangesCounts(additions: additions, deletions: deletions)
+                  Image(systemName: "chevron.forward")
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+                }
+              }
+              .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .help("Show the \(capabilities.vocabulary.noun.lowercased()) diff in a new window")
+          } else {
+            LabeledContent("Changes") {
+              PullRequestChangesCounts(additions: additions, deletions: deletions)
             }
           }
         }
@@ -278,6 +300,18 @@ private struct GitInspectorContent: View {
     case .expected: 2
     case .skipped: 3
     case .success: 4
+    }
+  }
+}
+
+private struct PullRequestChangesCounts: View {
+  let additions: Int
+  let deletions: Int
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Text("+\(additions.formatted())").foregroundStyle(.green)
+      Text("-\(deletions.formatted())").foregroundStyle(.red)
     }
   }
 }

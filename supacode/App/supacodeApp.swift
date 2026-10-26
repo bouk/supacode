@@ -671,20 +671,7 @@ struct SupacodeApp: App {
         TerminalTabSelectionCommands(store: store)
       }
       WindowCommands()
-      CommandGroup(after: .textEditing) {
-        Button("Go to Worktree") {
-          guard NSApp.currentEvent?.isAutoRepeatKeyDown != true else { return }
-          store.send(.commandPalette(.togglePresentInMode(.worktreeSwitcher)))
-        }
-        .appKeyboardShortcut(AppShortcuts.worktreeSwitcher.effective(from: store.settings.shortcutOverrides))
-        .help("Switch between worktrees, sorted by most recently used")
-        Button("Command Palette") {
-          guard NSApp.currentEvent?.isAutoRepeatKeyDown != true else { return }
-          store.send(.commandPalette(.togglePresentInMode(.commands)))
-        }
-        .appKeyboardShortcut(AppShortcuts.commandPalette.effective(from: store.settings.shortcutOverrides))
-        .help("Command Palette")
-      }
+      GoToCommands(store: store)
       CommandGroup(replacing: .singleWindowList) {
         Button("Supacode") {
           NSApplication.shared.surfaceMainWindow()
@@ -747,6 +734,16 @@ struct SupacodeApp: App {
     .handlesExternalEvents(matching: [])
     .windowToolbarStyle(.unified)
     .defaultSize(width: 720, height: 640)
+    .restorationBehavior(.disabled)
+    WindowGroup("Pull Request Diff", id: WindowID.pullRequestDiff, for: PullRequestDiffRequest.self) { $request in
+      if let request {
+        PullRequestDiffWindow(request: request, terminalManager: terminalManager)
+          .appChromeTextSize(store.settings.chromeTextSize)
+      }
+    }
+    .handlesExternalEvents(matching: [])
+    .windowToolbarStyle(.unified)
+    .defaultSize(width: 1100, height: 800)
     .restorationBehavior(.disabled)
     MenuBarExtra(isInserted: menuBarInserted) {
       MenuBarNotificationsMenu(store: store)

@@ -29,6 +29,7 @@ struct GitLabCLIClient: Sendable {
   var mergeMergeRequest: @Sendable (URL, String, String, Int, PullRequestMergeStrategy) async throws -> Void
   var closeMergeRequest: @Sendable (URL, String, String, Int) async throws -> Void
   var markMergeRequestReady: @Sendable (URL, String, String, Int) async throws -> Void
+  var mergeRequestDiff: @Sendable (String, String, Int) async throws -> String
   var isAvailable: @Sendable () async -> Bool
   var authenticatedHosts: @Sendable () async -> Set<String>
 }
@@ -53,6 +54,7 @@ nonisolated extension GitLabCLIClient: DependencyKey {
       mergeMergeRequest: mergeMergeRequestFetcher(shell: shell, resolver: resolver),
       closeMergeRequest: closeMergeRequestFetcher(shell: shell, resolver: resolver),
       markMergeRequestReady: markMergeRequestReadyFetcher(shell: shell, resolver: resolver),
+      mergeRequestDiff: mergeRequestDiffFetcher(shell: shell, resolver: resolver),
       isAvailable: isAvailableFetcher(shell: shell, resolver: resolver),
       authenticatedHosts: {
         if remoteConfiguration {
@@ -93,6 +95,7 @@ nonisolated extension GitLabCLIClient: DependencyKey {
     mergeMergeRequest: { _, _, _, _, _ in },
     closeMergeRequest: { _, _, _, _ in },
     markMergeRequestReady: { _, _, _, _ in },
+    mergeRequestDiff: { _, _, _ in "" },
     isAvailable: { true },
     authenticatedHosts: { ["gitlab.com"] }
   )
@@ -513,6 +516,20 @@ nonisolated private func isAvailableFetcher(
     } catch {
       return false
     }
+  }
+}
+
+nonisolated private func mergeRequestDiffFetcher(
+  shell: ShellClient,
+  resolver: ForgeCLIExecutableResolver
+) -> @Sendable (String, String, Int) async throws -> String {
+  { host, projectPath, number in
+    try await runGlab(
+      shell: shell,
+      resolver: resolver,
+      arguments: ["mr", "diff", "\(number)", "--raw", "-R", GitLabAPI.repoURL(host: host, path: projectPath)],
+      repoRoot: nil
+    )
   }
 }
 
