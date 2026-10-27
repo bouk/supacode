@@ -119,8 +119,8 @@ nonisolated extension GitClientDependency: DependencyKey {
   /// `isGitRepository` / `rootDirectoryExists` still probe the *local*
   /// filesystem, which is unreachable for remote paths, so these stay local-only
   /// probes the remote load path never relies on.
-  static func ssh(host: RemoteHost) -> GitClientDependency {
-    var value = make(shell: .ssh(host: host))
+  static func ssh(host: RemoteHost, base: ShellClient = .live) -> GitClientDependency {
+    var value = make(shell: .ssh(host: host, base: base))
     // Copying files into a new worktree is local-only: remote creations route
     // through `remoteCreateWorktree`, which never copies. Resolve to `.failed`
     // so the copy path can't fall back to an unfiltered copy if it is ever wired

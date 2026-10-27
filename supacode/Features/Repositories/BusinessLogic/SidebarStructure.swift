@@ -521,7 +521,7 @@ extension RepositoriesFeature.Action {
     // Layout + slices but not the notification snapshot (no notification touch).
     // The pin flips and the create / script paths rewrite `isPinned`, the row
     // roster, or the selection, all of which the selection slice projects.
-    case .createRandomWorktreeSucceeded, .createRandomWorktreeFailed,
+    case .createRandomWorktreeSucceeded, .createRandomWorktreeFailed, .remoteWorktreeCreationFailed,
       .pendingWorktreeProgressUpdated, .cancelPendingWorktree,
       .archiveScriptCompleted, .deleteScriptCompleted, .scriptCompleted,
       .worktreeCreationSettled,

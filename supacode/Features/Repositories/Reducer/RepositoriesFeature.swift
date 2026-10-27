@@ -458,6 +458,7 @@ struct RepositoriesFeature {
     )
     case worktreeCreationRejected(pendingID: Worktree.ID?, message: String, licenseRequired: Bool)
     case remoteWorktreeCreationCompleted(pendingID: Worktree.ID, worktreeID: Worktree.ID)
+    case remoteWorktreeCreationFailed(pendingID: Worktree.ID, previousSelection: Worktree.ID?, message: String)
     case promptedWorktreeCreationDataLoaded(
       repositoryID: Repository.ID,
       automaticBaseRef: String,
@@ -702,7 +703,7 @@ struct RepositoriesFeature {
     guard let host = worktree.host else {
       return gitClient
     }
-    return .ssh(host: host)
+    return .ssh(host: host, base: shellClient)
   }
 
   /// Host-aware git client for a repository: the SSH flavor for a remote repo
@@ -712,7 +713,7 @@ struct RepositoriesFeature {
     guard let host = repository.host else {
       return gitClient
     }
-    return .ssh(host: host)
+    return .ssh(host: host, base: shellClient)
   }
 
   /// Present the connection form seeded from the existing remote for `repositoryID`.
@@ -1999,16 +2000,20 @@ struct RepositoriesFeature {
           return rejectWorktreeCreation(
             permit, pendingID: providedPendingID, message: "This repository is being removed.")
         }
-        // Remote repos create worktrees over ssh via `git worktree add`, then
-        // reload to re-list. This bypasses the local pending/stream flow below
-        // (so `pin` has no pending row to ride on and is ignored), but honors
-        // the same name + base-ref choices from the prompt.
         if repository.host != nil {
-          // Remote creations have no pending row to carry a customization, so
-          // drain the parked entry instead of leaking it.
-          if let rejectedBranchName {
-            state.dropPendingCustomization(repositoryID: repository.id, branchName: rejectedBranchName)
-          }
+          let pendingID = providedPendingID ?? WorktreeID("\(WorktreeID.pendingPrefix)\(uuid().uuidString)")
+          let previousSelection = state.selectedWorktreeID
+          let customization = rejectedBranchName.flatMap { state.pendingCreationCustomizations[repository.id]?[$0] }
+          if let rejectedBranchName { state.dropPendingCustomization(repositoryID: repository.id, branchName: rejectedBranchName) }
+          state.pendingWorktrees.append(
+            PendingWorktree(
+              id: pendingID, repositoryID: repository.id,
+              progress: WorktreeCreationProgress(stage: .loadingLocalBranches, worktreeName: rejectedBranchName),
+              customization: customization, background: background, pinned: pin
+            )
+          )
+          Self.syncSidebar(&state)
+          if !background { state.setSingleWorktreeSelection(pendingID) }
           return remoteCreateWorktree(
             repository: repository,
             nameSource: nameSource,
@@ -2016,7 +2021,8 @@ struct RepositoriesFeature {
             upstream: upstream,
             fetchOrigin: fetchOrigin,
             placement: placement,
-            pendingID: providedPendingID ?? WorktreeID("\(WorktreeID.pendingPrefix)\(uuid().uuidString)")
+            pendingID: pendingID,
+            previousSelection: previousSelection
           )
         }
         let previousSelection = state.selectedWorktreeID
@@ -4634,6 +4640,17 @@ struct RepositoriesFeature {
       case .cancelPendingWorktree(let worktreeID):
         return cancelPendingWorktree(worktreeID, state: &state)
 
+      case .remoteWorktreeCreationFailed(let pendingID, let previousSelection, let message):
+        let cancelled = state.cancelRequestedPendingIDs.remove(pendingID) != nil
+        let wasSelected = state.selection == .worktree(pendingID)
+        state.removePendingWorktree(pendingID)
+        state.restoreSelection(previousSelection, pendingID: pendingID)
+        guard !cancelled else { return .none }
+        return .merge(
+          .send(.worktreeCreationRejected(pendingID: pendingID, message: message, licenseRequired: false)),
+          wasSelected ? .send(.delegate(.selectedWorktreeChanged(state.worktree(for: state.selectedWorktreeID)))) : .none
+        )
+
       case .createRandomWorktreeSucceeded(
         let worktree,
         let repositoryID,
@@ -5616,8 +5633,10 @@ struct RepositoriesFeature {
       problems.append(error.localizedDescription)
     }
     // `removeWorktree` swallows most git failures; the filesystem is authoritative for local creations.
-    let path = worktree.workingDirectory.path(percentEncoded: false)
-    if FileManager.default.fileExists(atPath: path) {
+    if let directory = worktree.localWorkingDirectory,
+      FileManager.default.fileExists(atPath: directory.path(percentEncoded: false))
+    {
+      let path = directory.path(percentEncoded: false)
       repositoriesLogger.error("Worktree \(worktree.name) survived cleanup at \(path).")
       problems.append("\(worktree.name) could not be removed and will reappear in the sidebar. Delete it manually.")
     }
@@ -5719,6 +5738,9 @@ struct RepositoriesFeature {
     // creations with the same name can't both claim one discovery.
     var droppedPendingIDs: Set<Worktree.ID> = []
     for pending in state.pendingWorktrees {
+      // Remote creation supplies its exact location on completion. Keep its
+      // pending row until then, even if an SSH refresh discovers it first.
+      if state.repositories[id: pending.repositoryID]?.host != nil { continue }
       guard repositoryIDs.contains(pending.repositoryID),
         let pendingName = pending.progress.worktreeName,
         remainingDiscoveredNamesByRepo[pending.repositoryID]?.contains(pendingName) == true
@@ -5803,11 +5825,9 @@ struct RepositoriesFeature {
     animated: Bool
   ) -> ApplyRepositoriesResult {
     let repositoryIDs = Set(repositories.map(\.id))
-    // Pendings are local-only, so the roots-derived set is authoritative for
-    // "still configured" across transient load failures.
     let configuredRepositoryIDs = Set(
       roots.map { RepositoryID($0.standardizedFileURL.path(percentEncoded: false)) }
-    )
+    ).union(Self.persistedRemoteRepositoryRoots().map(RepositoryID.init))
     let (filteredPendingWorktrees, pendingTransfers) =
       prunedPendingWorktrees(
         state: state,

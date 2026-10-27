@@ -423,8 +423,7 @@ extension RepositoriesFeature {
 
   // swiftlint:disable function_parameter_count
   /// Remote worktree creation: pick a name (excluding remote branches), run
-  /// `git worktree add` over ssh, then reload to re-list. Bypasses the local
-  /// pending/stream flow but honors the prompt's name + base-ref choices. The
+  /// `git worktree add` over ssh. The
   /// base ref is resolved the same way as local (`baseRefSource` → explicit /
   /// repo setting, falling back to the remote's automatic base ref), and the
   /// new worktree lands beside the repo root (`<parent>/<name>`), so no parent
@@ -436,7 +435,8 @@ extension RepositoriesFeature {
     upstream: WorktreeUpstreamPreference,
     fetchOrigin: Bool,
     placement: WorktreePlacementOverride?,
-    pendingID: Worktree.ID
+    pendingID: Worktree.ID,
+    previousSelection: Worktree.ID?
   ) -> Effect<Action> {
     // swiftlint:enable function_parameter_count
     guard let host = repository.host else { return .none }
@@ -449,7 +449,7 @@ extension RepositoriesFeature {
     return .run { send in
       let finishFailure: @Sendable (String) async -> Void = { message in
         await send(
-          .worktreeCreationRejected(pendingID: pendingID, message: message, licenseRequired: false))
+          .remoteWorktreeCreationFailed(pendingID: pendingID, previousSelection: previousSelection, message: message))
       }
       let client = GitClient(shell: shell)
       let remoteBranches = (try? await client.localBranchNames(for: repoRoot)) ?? []
@@ -471,6 +471,8 @@ extension RepositoriesFeature {
         }
         name = trimmed
       }
+      await send(.pendingWorktreeProgressUpdated(
+        id: pendingID, progress: WorktreeCreationProgress(stage: .resolvingBaseReference, worktreeName: name)))
       // Parent directory precedence: the prompt's explicit override, then the
       // remote host's Supacode settings (per-repo, then global), then the
       // local-style default (alongside the repo root on the host). The leaf is
@@ -497,6 +499,8 @@ extension RepositoriesFeature {
         }
       }
       do {
+        await send(.pendingWorktreeProgressUpdated(
+          id: pendingID, progress: WorktreeCreationProgress(stage: .creatingWorktree, worktreeName: name, baseRef: baseRef)))
         try await client.createGitWorktree(
           in: repoRoot, name: name, baseRef: baseRef, worktreePath: worktreePath)
         // The worktree exists either way; a failed tracking update surfaces as
@@ -521,8 +525,15 @@ extension RepositoriesFeature {
           repositoryRoot: RepositoryLocation.normalizedRemotePath(
             repoRoot.path(percentEncoded: false))
         )
+        let worktree = Worktree(location: location, kind: .git, name: name, detail: name)
+        // This path uses `git worktree add -b`, which succeeds only for a new
+        // branch and checkout; it cannot adopt an existing worktree like `wt`.
+        let target = WorktreeCreationCleanupTarget(
+          branchName: name, directory: worktreePath, directoryPreexisted: false,
+          startedWorktreeAdd: true)
+        await send(.createRandomWorktreeSucceeded(
+          worktree, repositoryID: repository.id, pendingID: pendingID, ownership: .created(target)))
         await send(.remoteWorktreeCreationCompleted(pendingID: pendingID, worktreeID: location.id))
-        await send(.loadPersistedRepositories)
       } catch {
         await finishFailure(error.localizedDescription)
       }

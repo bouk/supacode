@@ -453,6 +453,7 @@ struct LicenseTests {
         return ShellOutput(stdout: "", stderr: "", exitCode: 0)
       }
     }
+    store.exhaustivity = .off
     let pendingID: Worktree.ID = "pending:ssh-license-test"
     await store.send(
       .createWorktreeInRepository(
@@ -460,22 +461,10 @@ struct LicenseTests {
         baseRefSource: .explicit("HEAD"), fetchOrigin: false,
         placement: WorktreePlacementOverride(path: "/home/me/worktrees"), pendingID: pendingID))
     if creationFails {
-      let error = GitClientError.commandFailed(
-        command:
-          "/usr/bin/env git -C /home/me/repo worktree add /home/me/worktrees/feature/ -b feature HEAD",
-        message: "stderr:\nRemote creation failed")
-      await store.receive(\.worktreeCreationRejected) {
-        $0.alert = AlertState {
-          TextState("Unable to create worktree")
-        } actions: {
-          ButtonState(role: .cancel) { TextState("OK") }
-        } message: {
-          TextState(error.localizedDescription)
-        }
-      }
+      await store.receive(\.remoteWorktreeCreationFailed)
     } else {
+      await store.receive(\.createRandomWorktreeSucceeded)
       await store.receive(\.remoteWorktreeCreationCompleted)
-      await store.receive(\.loadPersistedRepositories)
     }
     await store.finish()
     #expect(

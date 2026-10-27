@@ -1669,3 +1669,136 @@ struct RemoteRepositoryResolutionTests {
     _ = state
   }
 }
+
+@MainActor
+struct RemoteWorktreeCreationFeedbackTests {
+  actor Gate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async {
+      await withCheckedContinuation { continuation = $0 }
+    }
+    func waitUntilWaiting() async {
+      while continuation == nil { await Task.yield() }
+    }
+    func resume() { continuation?.resume(); continuation = nil }
+  }
+
+  @Test(.dependencies, arguments: [0, 1, 2, 3, 4])
+  func creationShowsPendingAndHonorsSelection(mode: Int) async throws {
+    let background = mode == 1
+    let host = RemoteHost(alias: "devbox")
+    let main = Worktree(location: .remote(host, workingDirectory: "/srv/repo", repositoryRoot: "/srv/repo"),
+      kind: .git, name: "main", detail: "")
+    let repo = Repository(location: .remote(host, path: "/srv/repo"), kind: .git, name: "repo", worktrees: [main])
+    var state = RepositoriesFeature.State()
+    state.repositories = [repo]
+    state.setSingleWorktreeSelection(main.id)
+    state.reconcileSidebarForTesting()
+    let gate = Gate()
+    let pendingID: Worktree.ID = "pending:remote-test"
+    let store = TestStore(initialState: state) { RepositoriesFeature() } withDependencies: {
+      $0.shellClient.run = { _, arguments, _ in
+        let command = arguments.last ?? ""
+        if command.contains("worktree"), command.contains("add") { await gate.wait() }
+        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
+      }
+    }
+    store.exhaustivity = .off
+    await store.send(.createWorktreeInRepository(
+      repositoryID: repo.id, nameSource: mode == 4 ? .random : .explicit("feature"), baseRefSource: .explicit("HEAD"),
+      fetchOrigin: false, placement: WorktreePlacementOverride(path: "/srv/worktrees"),
+      pendingID: pendingID, background: background, pin: true))
+    #expect(store.state.pendingWorktree(for: pendingID) != nil)
+    #expect(store.state.selectedWorktreeID == (background ? main.id : pendingID))
+    await store.receive(\.pendingWorktreeProgressUpdated)
+    let chosenName = try #require(store.state.pendingWorktree(for: pendingID)?.progress.worktreeName)
+    let createdID = WorktreeLocation.remote(host, workingDirectory: "/srv/worktrees/\(chosenName)", repositoryRoot: "/srv/repo").id
+    await store.receive(\.pendingWorktreeProgressUpdated)
+    await gate.waitUntilWaiting()
+    #expect(store.state.pendingWorktree(for: pendingID)?.progress.stage == .creatingWorktree)
+    if mode == 2 { await store.send(.selectWorktree(main.id)) }
+    if mode == 3 {
+      let discovered = Worktree(location: .remote(host, workingDirectory: "/srv/worktrees/feature", repositoryRoot: "/srv/repo"),
+        kind: .git, name: "feature", detail: "")
+      let refreshed = Repository(location: .remote(host, path: "/srv/repo"), kind: .git, name: "repo", worktrees: [main, discovered])
+      await store.send(.remoteRepositoryResolved(repositoryID: repo.id, repository: refreshed, failureMessage: nil))
+      #expect(store.state.pendingWorktree(for: pendingID) != nil)
+      #expect(store.state.selectedWorktreeID == pendingID)
+    }
+    await gate.resume()
+    await store.receive(\.createRandomWorktreeSucceeded)
+    #expect(store.state.pendingWorktree(for: pendingID) == nil)
+    #expect(store.state.repositories[id: repo.id]?.worktrees[id: createdID] != nil)
+    #expect(store.state.selectedWorktreeID == (background || mode == 2 ? main.id : createdID))
+    #expect(store.state.sidebar.sections[repo.id]?.buckets[.pinned]?.items[createdID] != nil)
+    await store.finish()
+  }
+
+  @Test(.dependencies) func failedCreationRestoresPreviousSelection() async {
+    let host = RemoteHost(alias: "devbox")
+    let main = Worktree(location: .remote(host, workingDirectory: "/srv/repo", repositoryRoot: "/srv/repo"),
+      kind: .git, name: "main", detail: "")
+    let repo = Repository(location: .remote(host, path: "/srv/repo"), kind: .git, name: "repo", worktrees: [main])
+    var state = RepositoriesFeature.State()
+    state.repositories = [repo]
+    state.setSingleWorktreeSelection(main.id)
+    state.reconcileSidebarForTesting()
+    let pendingID: Worktree.ID = "pending:remote-failure"
+    let store = TestStore(initialState: state) { RepositoriesFeature() } withDependencies: {
+      $0.shellClient.run = { _, arguments, _ in
+        let command = arguments.last ?? ""
+        if command.contains("worktree"), command.contains("add") {
+          throw ShellClientError(command: command, stdout: "", stderr: "failed", exitCode: 1)
+        }
+        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
+      }
+    }
+    store.exhaustivity = .off
+    await store.send(.createWorktreeInRepository(
+      repositoryID: repo.id, nameSource: .explicit("feature"), baseRefSource: .explicit("HEAD"),
+      fetchOrigin: false, placement: WorktreePlacementOverride(path: "/srv/worktrees"), pendingID: pendingID))
+    #expect(store.state.selectedWorktreeID == pendingID)
+    await store.receive(\.remoteWorktreeCreationFailed)
+    await store.receive(\.worktreeCreationRejected)
+    #expect(store.state.pendingWorktrees.isEmpty)
+    #expect(store.state.selectedWorktreeID == main.id)
+    #expect(store.state.alert != nil)
+    await store.finish()
+  }
+
+  @Test(.dependencies) func cancellingRemoteCreationRemovesItOnTheHost() async {
+    let host = RemoteHost(alias: "devbox")
+    let main = Worktree(location: .remote(host, workingDirectory: "/srv/repo", repositoryRoot: "/srv/repo"),
+      kind: .git, name: "main", detail: "")
+    let repo = Repository(location: .remote(host, path: "/srv/repo"), kind: .git, name: "repo", worktrees: [main])
+    var state = RepositoriesFeature.State()
+    state.repositories = [repo]
+    state.setSingleWorktreeSelection(main.id)
+    state.reconcileSidebarForTesting()
+    let gate = Gate()
+    let commands = LockIsolated<[String]>([])
+    let pendingID: Worktree.ID = "pending:remote-cancel"
+    let store = TestStore(initialState: state) { RepositoriesFeature() } withDependencies: {
+      $0.shellClient.run = { _, arguments, _ in
+        let command = arguments.last ?? ""
+        commands.withValue { $0.append(command) }
+        if command.contains("worktree"), command.contains("add") { await gate.wait() }
+        return ShellOutput(stdout: command.contains("branch") ? "feature\n" : "", stderr: "", exitCode: 0)
+      }
+    }
+    store.exhaustivity = .off
+    await store.send(.createWorktreeInRepository(
+      repositoryID: repo.id, nameSource: .explicit("feature"), baseRefSource: .explicit("HEAD"),
+      fetchOrigin: false, placement: WorktreePlacementOverride(path: "/srv/worktrees"), pendingID: pendingID))
+    await store.receive(\.pendingWorktreeProgressUpdated)
+    await store.receive(\.pendingWorktreeProgressUpdated)
+    await gate.waitUntilWaiting()
+    await store.send(.cancelPendingWorktree(pendingID))
+    #expect(store.state.pendingWorktree(for: pendingID) == nil)
+    await gate.resume()
+    await store.receive(\.createRandomWorktreeSucceeded)
+    await store.finish()
+    #expect(commands.value.contains { $0.contains("worktree") && $0.contains("remove") && $0.contains("/srv/worktrees/feature") })
+    #expect(store.state.repositories[id: repo.id]?.worktrees.count == 1)
+  }
+}
