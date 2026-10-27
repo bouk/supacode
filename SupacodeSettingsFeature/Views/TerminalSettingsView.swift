@@ -78,15 +78,6 @@ public struct TerminalSettingsView: View {
         Text("Transparent background preferences only apply to the Supacode theme.")
       }
       Section("Persistence") {
-        Toggle(isOn: $store.terminateSessionsOnQuit) {
-          Text("Terminate sessions on quit")
-          Text(
-            """
-            Close all tabs and stop background shells when quitting.
-            Terminal persistence is powered by [zmx\u{00A0}\u{2197}](https://github.com/neurosnap/zmx).
-            """
-          )
-        }
         Toggle(isOn: $store.terminalHibernationEnabled) {
           HStack(spacing: 6) {
             Text("Hibernate inactive terminals")

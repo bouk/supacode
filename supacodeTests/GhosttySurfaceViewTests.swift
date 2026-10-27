@@ -7,8 +7,42 @@ import Testing
 
 @testable import supacode
 
+private final class ShortcutTestWindow: NSWindow {
+  nonisolated deinit {}
+
+  override var isKeyWindow: Bool { true }
+}
+
 @MainActor
 struct GhosttySurfaceViewTests {
+  @Test func commandWClosesOnlyTheFocusedSurfaceTabBeforeMenuDispatch() throws {
+    let window = ShortcutTestWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    let view = GhosttySurfaceView(id: UUID(), runtime: GhosttyRuntime(), workingDirectory: nil,
+      initialGeometry: .fallback, context: GHOSTTY_SURFACE_CONTEXT_TAB)
+    defer { view.closeSurface(); window.close() }
+    window.contentView?.addSubview(view)
+    window.makeKeyAndOrderFront(nil)
+    #expect(window.makeFirstResponder(view))
+    var closes = 0
+    view.onCloseTabShortcut = { closes += 1 }
+    func event(_ modifiers: NSEvent.ModifierFlags, repeat isRepeat: Bool = false) throws -> NSEvent {
+      let keyCode = try #require(AppShortcutOverride.keyCode(forDisplayedKeyEquivalent: "w"))
+      return try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+        timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "w",
+        charactersIgnoringModifiers: "w", isARepeat: isRepeat,
+        keyCode: keyCode))
+    }
+    #expect(view.localEventKeyDown(try event(.command)) == nil)
+    #expect(closes == 1)
+    #expect(view.localEventKeyDown(try event(.command, repeat: true)) == nil)
+    #expect(closes == 1)
+    #expect(view.localEventKeyDown(try event([.command, .shift])) != nil)
+    #expect(closes == 1)
+    window.makeFirstResponder(nil)
+    #expect(view.localEventKeyDown(try event(.command)) != nil)
+  }
   @Test func normalizedWorkingDirectoryPathRemovesTrailingSlashForNonRootPath() {
     #expect(
       GhosttySurfaceView.normalizedWorkingDirectoryPath("/Users/onevcat/Sync/github/supacode/")

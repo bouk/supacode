@@ -39,6 +39,10 @@ struct LayoutSurfaceConduit {
 
   private func wireTopologyCallbacks(_ view: GhosttySurfaceView, contentID: ContentID, surfaceID: UUID) {
     let host = host
+    view.onCloseTabShortcut = { [weak view] in
+      guard let view, isLive(view) else { return }
+      host.sendLayoutAction(.contentRequestedClose(content: contentID, scope: .tab))
+    }
     view.bridge.onTitleChange = { [weak view] title in
       guard let view, isLive(view) else { return }
       host.updateReportedTitle(for: contentID, title: title)

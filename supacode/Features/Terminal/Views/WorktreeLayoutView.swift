@@ -156,7 +156,7 @@ private struct LayoutAlertHost: View {
     )
     .background {
       if presentsAlert {
-        Color.clear.alert($store.scope(state: \.alert, action: \.alert))
+        Color.clear.defaultActionAlert($store.scope(state: \.alert, action: \.alert))
       }
     }
   }

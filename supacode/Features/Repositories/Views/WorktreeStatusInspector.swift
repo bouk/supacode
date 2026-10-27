@@ -624,6 +624,7 @@ private struct NotificationsInspectorContent: View {
       titleVisibility: .visible
     ) {
       Button("Dismiss All", role: .destructive, action: onDismissAll)
+        .keyboardShortcut(.defaultAction)
       Button("Cancel", role: .cancel) {}
     }
   }

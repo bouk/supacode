@@ -62,15 +62,6 @@ public struct AppearanceSettingsView: View {
           Text("Confirm before closing tabs")
           Text(store.confirmCloseTab.subtitle)
         }
-        Picker(selection: $store.confirmQuitMode) {
-          ForEach(ConfirmQuitMode.allCases, id: \.self) { mode in
-            DefaultTaggedLabel(label: mode.label, isDefault: mode == GlobalSettings.default.confirmQuitMode)
-              .tag(mode)
-          }
-        } label: {
-          Text("Confirm before quitting app")
-          Text(store.confirmQuitMode.subtitle)
-        }
       }
       Section("Editor & Layout") {
         // The stored id deliberately keeps naming an uninstalled editor, so the choice

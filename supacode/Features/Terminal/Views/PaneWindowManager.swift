@@ -670,7 +670,7 @@ private struct WindowedPaneRootView: View {
       // Confirmations raised from this pane present here; the main layout's
       // host skips them, which matters when its worktree is not selected.
       if store.alertPaneID == paneID {
-        Color.clear.alert($store.scope(state: \.alert, action: \.alert))
+        Color.clear.defaultActionAlert($store.scope(state: \.alert, action: \.alert))
       }
     }
     // The same chrome stack as the main window: the backdrop carries the

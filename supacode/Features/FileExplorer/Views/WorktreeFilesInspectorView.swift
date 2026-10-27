@@ -216,7 +216,7 @@ private struct FileExplorerTreeContent: View {
       }
       quickLookURL = root.appending(path: newPath)
     }
-    .alert($store.scope(state: \.alert, action: \.alert))
+    .defaultActionAlert($store.scope(state: \.alert, action: \.alert))
   }
 
   /// Mirrors `OpenWorktreeActionIcon`: an SF Symbol when the action defines

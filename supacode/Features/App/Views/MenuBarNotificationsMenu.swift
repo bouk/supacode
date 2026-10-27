@@ -59,9 +59,6 @@ struct MenuBarNotificationsMenu: View {
       }
       MenuBarDivider()
       MenuBarActionRow(title: "Quit Supacode") {
-        // The quit confirmation is an alert hosted by the main window, so it
-        // needs one on screen before it can be answered.
-        showMainWindow()
         store.send(.requestQuit)
       }
     }

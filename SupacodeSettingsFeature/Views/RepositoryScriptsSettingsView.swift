@@ -85,7 +85,7 @@ public struct RepositoryScriptsSettingsView: View {
         }
 
       }
-      .alert($store.scope(state: \.alert, action: \.alert))
+      .defaultActionAlert($store.scope(state: \.alert, action: \.alert))
       .formStyle(.grouped)
       .contentMargins(.trailing, 6, for: .scrollIndicators)
       .padding(.top, -20)

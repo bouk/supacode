@@ -393,10 +393,13 @@ struct WorktreeDetailView: View {
       .focusedAction(\.focusSplitAction, enabled: hasActiveWorktree) { direction in
         store.send(.focusSplit(direction))
       }
-      .focusedAction(\.closeTabAction, enabled: hasActiveWorktree && hasFocusedTab) {
+      // Scene-level so ⌘W stays on Close Tab while the window is key. SwiftUI
+      // focus tracking can lose the AppKit terminal surface (e.g. after another
+      // window was key), and a view-level value then hands ⌘W to Close Window.
+      .focusedSceneAction(\.closeTabAction, enabled: hasActiveWorktree && hasFocusedTab) {
         store.send(.closeTab)
       }
-      .focusedAction(\.closeSurfaceAction, enabled: hasActiveWorktree && hasFocusedTab) {
+      .focusedSceneAction(\.closeSurfaceAction, enabled: hasActiveWorktree && hasFocusedTab) {
         store.send(.closeSurface)
       }
       .focusedSceneAction(\.startSearchAction, enabled: hasActiveWorktree) {

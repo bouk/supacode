@@ -330,7 +330,7 @@ struct SettingsView: View {
       }
     }
     .navigationSplitViewStyle(.balanced)
-    .alert($settingsStore.scope(state: \.alert, action: \.alert))
+    .defaultActionAlert($settingsStore.scope(state: \.alert, action: \.alert))
     .frame(minWidth: 750, minHeight: 500)
     .onAppear {
       guard settingsStore.selection == nil else { return }

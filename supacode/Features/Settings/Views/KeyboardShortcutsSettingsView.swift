@@ -132,6 +132,7 @@ struct KeyboardShortcutsSettingsView: View {
           Button("Restore Defaults", role: .destructive) {
             store.send(.resetAllShortcuts)
           }
+          .keyboardShortcut(.defaultAction)
         }
       }
     }

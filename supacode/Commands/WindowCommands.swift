@@ -13,6 +13,12 @@ struct WindowCommands: Commands {
     let closeTabEnabled = closeTabAction?.isEnabled == true
     CommandGroup(replacing: .saveItem) {
       Button("Close Tab", systemImage: "xmark") {
+        // The main window's scene-level action can resolve while a pane window
+        // is key; close the pane window's tab, not the selected worktree's.
+        if let paneWindow = NSApp.keyWindow as? PaneWindow, let closeTab = paneWindow.closeSelectedTab {
+          closeTab()
+          return
+        }
         closeTabAction?()
       }
       // Suppressed while unavailable so Close Window can claim ⌘W.

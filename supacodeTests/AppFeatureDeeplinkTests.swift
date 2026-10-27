@@ -3559,30 +3559,10 @@ struct AppFeatureDeeplinkTests {
   @Test(.dependencies) func requestQuitTerminates() async {
     let worktree = makeWorktree()
     let terminated = LockIsolated(false)
-    let store = TestStore(
-      initialState: AppFeature.State(
-        repositories: makeRepositoriesState(worktree: worktree),
-        settings: SettingsFeature.State(),
-      )
-    ) {
-      AppFeature()
-    } withDependencies: {
-      $0.appLifecycleClient.terminate = { terminated.setValue(true) }
-      $0.terminalClient.hasInflightBlockingScripts = { false }
-    }
-    store.exhaustivity = .off
-
-    await store.send(.requestQuit)
-    await store.finish()
-
-    #expect(terminated.value)
-    #expect(store.state.alert == nil)
-  }
-
-  @Test(.dependencies) func requestQuitWithAlwaysModeShowsAlert() async {
-    let worktree = makeWorktree()
+    let sessionsTerminated = LockIsolated(false)
     var settings = GlobalSettings.default
     settings.confirmQuitMode = .always
+    settings.terminateSessionsOnQuit = true
     let store = TestStore(
       initialState: AppFeature.State(
         repositories: makeRepositoriesState(worktree: worktree),
@@ -3591,37 +3571,20 @@ struct AppFeatureDeeplinkTests {
     ) {
       AppFeature()
     } withDependencies: {
-      $0.terminalClient.hasInflightBlockingScripts = { false }
+      $0.appLifecycleClient.terminate = { terminated.setValue(true) }
+      $0.terminalClient.terminateAllSessions = { sessionsTerminated.setValue(true) }
     }
     store.exhaustivity = .off
 
     await store.send(.requestQuit)
     await store.finish()
 
-    #expect(store.state.alert != nil)
+    #expect(terminated.value)
+    #expect(!sessionsTerminated.value)
+    #expect(store.state.alert == nil)
   }
 
-  @Test(.dependencies) func requestQuitInAutoModeWithBlockingScriptShowsAlert() async {
-    let worktree = makeWorktree()
-    let store = TestStore(
-      initialState: AppFeature.State(
-        repositories: makeRepositoriesState(worktree: worktree),
-        settings: SettingsFeature.State(),
-      )
-    ) {
-      AppFeature()
-    } withDependencies: {
-      $0.terminalClient.hasInflightBlockingScripts = { true }
-    }
-    store.exhaustivity = .off
-
-    await store.send(.requestQuit)
-    await store.finish()
-
-    #expect(store.state.alert != nil)
-  }
-
-  @Test(.dependencies) func confirmQuitAndTerminateInvokesTerminateAllSessions() async {
+  @Test(.dependencies) func quitAndTerminateInvokesTerminateAllSessions() async {
     let worktree = makeWorktree()
     let terminated = LockIsolated(false)
     let terminateSessionsCalled = LockIsolated(false)
@@ -3629,7 +3592,6 @@ struct AppFeatureDeeplinkTests {
       repositories: makeRepositoriesState(worktree: worktree),
       settings: SettingsFeature.State(),
     )
-    initialState.alert = AlertState { TextState("Quit Supacode?") }
     let store = TestStore(initialState: initialState) {
       AppFeature()
     } withDependencies: {
@@ -3638,7 +3600,7 @@ struct AppFeatureDeeplinkTests {
     }
     store.exhaustivity = .off
 
-    await store.send(.alert(.presented(.confirmQuitAndTerminate)))
+    await store.send(.requestQuitAndTerminateSessions)
     await store.finish()
 
     #expect(terminateSessionsCalled.value)
@@ -3674,49 +3636,7 @@ struct AppFeatureDeeplinkTests {
     #expect(response?["ok"] as? Bool == false)
   }
 
-  @Test(.dependencies) func cancelQuitAlertPreservesPendingResponseFD() async {
-    // Regression guard for the deleted pre-three-button-alert test: dismissing
-    // the quit confirmation must NOT drain a pending CLI socket response FD.
-    // Only `confirmQuit` / `confirmQuitAndTerminate` should trigger the drain.
-    let worktree = makeWorktree()
-    let (readFD, writeFD) = makePipe()
-    defer { close(readFD) }
-    var settings = GlobalSettings.default
-    settings.confirmQuitMode = .always
-    var initialState = AppFeature.State(
-      repositories: makeRepositoriesState(worktree: worktree),
-      settings: SettingsFeature.State(settings: settings),
-    )
-    initialState.deeplinkInputConfirmation = DeeplinkInputConfirmationFeature.State(
-      worktreeID: worktree.id,
-      worktreeName: worktree.name,
-      repositoryName: "repo",
-      message: .command("echo hello"),
-      action: .tabNew(input: "echo hello", id: nil),
-      responseFD: writeFD,
-    )
-    let store = TestStore(initialState: initialState) {
-      AppFeature()
-    } withDependencies: {
-      $0.terminalClient.hasInflightBlockingScripts = { false }
-    }
-    store.exhaustivity = .off
-
-    await store.send(.requestQuit)
-    #expect(store.state.alert != nil)
-    let priorFD = store.state.deeplinkInputConfirmation?.responseFD
-    await store.send(.alert(.dismiss))
-
-    #expect(store.state.alert == nil)
-    // Critical: the FD must still be live on the confirmation state, NOT drained.
-    #expect(store.state.deeplinkInputConfirmation?.responseFD == priorFD)
-    // No JSON should have been written by the dismiss; the FD stays open for
-    // the eventual deeplink confirmation to drain.
-    _ = writeFD
-  }
-
   @Test(.dependencies) func requestQuitInNeverModeSkipsAlertEvenWithActiveWork() async {
-    // `.never` short-circuits before `hasActiveWorkBlockingQuit` runs.
     let worktree = makeWorktree()
     let terminated = LockIsolated(false)
     var settings = GlobalSettings.default
@@ -3730,7 +3650,6 @@ struct AppFeatureDeeplinkTests {
       AppFeature()
     } withDependencies: {
       $0.appLifecycleClient.terminate = { terminated.setValue(true) }
-      // Active work, but `.never` shouldn't even consult it.
       $0.terminalClient.hasInflightBlockingScripts = { true }
     }
     store.exhaustivity = .off
@@ -3740,54 +3659,6 @@ struct AppFeatureDeeplinkTests {
 
     #expect(store.state.alert == nil)
     #expect(terminated.value)
-  }
-
-  @Test(.dependencies) func requestQuitInAutoModeWithBusyAgentShowsAlert() async {
-    let worktree = makeWorktree()
-    var repositoriesState = makeRepositoriesState(worktree: worktree)
-    repositoriesState.reconcileSidebarForTesting()
-    repositoriesState.sidebarItems[id: worktree.id]?.agentSnapshot.agents = [
-      .init(agent: .claude, activity: .busy)
-    ]
-    let store = TestStore(
-      initialState: AppFeature.State(
-        repositories: repositoriesState,
-        settings: SettingsFeature.State(),
-      )
-    ) {
-      AppFeature()
-    } withDependencies: {
-      $0.terminalClient.hasInflightBlockingScripts = { false }
-    }
-    store.exhaustivity = .off
-
-    await store.send(.requestQuit)
-    await store.finish()
-
-    #expect(store.state.alert != nil)
-  }
-
-  @Test(.dependencies) func requestQuitInAutoModeWithPendingLifecycleShowsAlert() async {
-    let worktree = makeWorktree()
-    var repositoriesState = makeRepositoriesState(worktree: worktree)
-    repositoriesState.reconcileSidebarForTesting()
-    repositoriesState.sidebarItems[id: worktree.id]?.lifecycle = .pending
-    let store = TestStore(
-      initialState: AppFeature.State(
-        repositories: repositoriesState,
-        settings: SettingsFeature.State(),
-      )
-    ) {
-      AppFeature()
-    } withDependencies: {
-      $0.terminalClient.hasInflightBlockingScripts = { false }
-    }
-    store.exhaustivity = .off
-
-    await store.send(.requestQuit)
-    await store.finish()
-
-    #expect(store.state.alert != nil)
   }
 
   @Test(.dependencies) func requestTerminateAllTerminalSessionsShowsAlertAndConfirmInvokesTerminate() async {

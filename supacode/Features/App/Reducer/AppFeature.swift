@@ -317,6 +317,7 @@ struct AppFeature {
     /// A File Explorer file was double-clicked: run the open-file script, else the system app.
     case openFileFromExplorer(URL)
     case requestQuit
+    case requestQuitAndTerminateSessions
     case requestTerminateAllTerminalSessions
     case newTerminal
     case newTerminalInWorktree(Worktree.ID)
@@ -361,8 +362,6 @@ struct AppFeature {
 
   enum Alert: Equatable {
     case dismiss
-    case confirmQuit
-    case confirmQuitAndTerminate
     case confirmTerminateAllTerminalSessions
   }
 
@@ -996,31 +995,9 @@ struct AppFeature {
         return .none
 
       case .requestQuit:
-        let mode = state.settings.confirmQuitMode
-        let needsConfirmation: Bool =
-          switch mode {
-          case .never: false
-          case .always: true
-          case .auto: hasActiveWorkBlockingQuit(state: state)
-          }
-        guard needsConfirmation else {
-          return quitEffect(state: &state, terminateSessions: state.settings.terminateSessionsOnQuit)
-        }
-        state.alert = quitConfirmationAlert(
-          terminateOnQuit: state.settings.terminateSessionsOnQuit,
-          hasBlockingScripts: terminalClient.hasInflightBlockingScripts()
-        )
-        // Without surfacing the main window, an alert raised from Cmd+Q
-        // when no window is up has no scene to anchor to and `terminate()`
-        // sits behind an invisible dialog.
-        return .run { @MainActor _ in NSApplication.shared.surfaceMainWindow() }
+        return quitEffect(state: &state, terminateSessions: false)
 
-      case .alert(.presented(.confirmQuit)):
-        state.alert = nil
-        return quitEffect(state: &state, terminateSessions: state.settings.terminateSessionsOnQuit)
-
-      case .alert(.presented(.confirmQuitAndTerminate)):
-        state.alert = nil
+      case .requestQuitAndTerminateSessions:
         return quitEffect(state: &state, terminateSessions: true)
 
       case .requestTerminateAllTerminalSessions:
@@ -3518,84 +3495,6 @@ struct AppFeature {
     let cmd = command(worktree)
     let terminalClient = terminalClient
     return .run { _ in await terminalClient.send(cmd) }
-  }
-
-  /// True when in-flight work would not survive a quit. Steady-state
-  /// `.idle` agents are intentionally excluded since persisting them is the
-  /// whole reason zmx wraps the shell; only mid-tool-call (`.busy`) and
-  /// prompt-waiting (`.awaitingInput`) agents are at risk. Running user
-  /// scripts also block because their stdout history dies with the shell.
-  private func hasActiveWorkBlockingQuit(state: State) -> Bool {
-    if terminalClient.hasInflightBlockingScripts() { return true }
-    return state.repositories.sidebarItems.contains { item in
-      if item.lifecycle.isTerminating || item.lifecycle == .pending { return true }
-      if !item.runningScripts.isEmpty { return true }
-      return item.agents.contains { $0.activity != .idle }
-    }
-  }
-
-  /// Single source of truth for the `(terminateOnQuit, hasBlockingScripts)`
-  /// matrix that drives the quit alert. Nested for namespacing (single-use).
-  struct QuitConfirmationContext: Equatable {
-    let terminateOnQuit: Bool
-    let hasBlockingScripts: Bool
-
-    var primaryLabel: String {
-      switch (terminateOnQuit, hasBlockingScripts) {
-      case (false, false): "Quit"
-      case (false, true): "Quit and Stop Scripts"
-      case (true, false): "Quit and Terminate Sessions"
-      case (true, true): "Quit and Stop Everything"
-      }
-    }
-
-    /// `nil` when the user opted into terminate-on-quit globally; the primary
-    /// button already runs the destructive path so a duplicate would be noise.
-    var destructiveLabel: String? {
-      guard !terminateOnQuit else { return nil }
-      return hasBlockingScripts ? "Quit and Stop Everything" : "Quit and Terminate Sessions"
-    }
-
-    var message: String {
-      switch (terminateOnQuit, hasBlockingScripts) {
-      case (false, false):
-        return "Terminal sessions keep running in the background after you quit. "
-          + "Choose Quit and Terminate Sessions to also close every tab and stop their shells."
-      case (false, true):
-        return "Running scripts will be stopped and lost. Terminal sessions keep running in the background. "
-          + "Choose Quit and Stop Everything to also close every tab and stop their shells."
-      case (true, false):
-        return "All terminal tabs will be closed and background shells stopped."
-      case (true, true):
-        return "Running scripts will be stopped and lost. "
-          + "All terminal tabs will be closed and background shells stopped."
-      }
-    }
-  }
-
-  /// Builds the quit confirmation. Cancel is the default so a user mashing
-  /// Enter never accidentally quits. Labels + message route through
-  /// `QuitConfirmationContext` so adding a future axis (e.g. mid-archive)
-  /// only edits one matrix instead of three dispatch points.
-  private func quitConfirmationAlert(
-    terminateOnQuit: Bool,
-    hasBlockingScripts: Bool
-  ) -> AlertState<Alert> {
-    let context = QuitConfirmationContext(
-      terminateOnQuit: terminateOnQuit,
-      hasBlockingScripts: hasBlockingScripts
-    )
-    return AlertState {
-      TextState("Quit Supacode?")
-    } actions: {
-      ButtonState(role: .cancel, action: .dismiss) { TextState("Cancel") }
-      ButtonState(action: .confirmQuit) { TextState(context.primaryLabel) }
-      if let destructive = context.destructiveLabel {
-        ButtonState(role: .destructive, action: .confirmQuitAndTerminate) { TextState(destructive) }
-      }
-    } message: {
-      TextState(context.message)
-    }
   }
 
   /// Performs the actual quit. When `terminateSessions` is true we await

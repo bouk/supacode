@@ -158,6 +158,7 @@ final class GhosttySurfaceView: NSView, Identifiable {
     return wrapper
   }
   var onFocusChange: ((Bool) -> Void)?
+  var onCloseTabShortcut: (() -> Void)?
   /// Asks the owning state to re-derive activity because user input reached an
   /// occluded surface, passing the window's fresh key/visibility readings so
   /// input alone never stamps unproven visibility into the state.
@@ -984,6 +985,15 @@ final class GhosttySurfaceView: NSView, Identifiable {
     let str = NSAttributedString(string: String(cString: text.text), attributes: attributes)
     let point = NSPoint(x: text.tl_px_x, y: frame.size.height - text.tl_px_y)
     showDefinition(for: str, at: point)
+  }
+
+  func localEventKeyDown(_ event: NSEvent) -> NSEvent? {
+    guard let window, event.window === window, window.isKeyWindow,
+      window.firstResponder === self, let onCloseTabShortcut,
+      AppShortcuts.closeTab.matches(event)
+    else { return event }
+    if !event.isARepeat { onCloseTabShortcut() }
+    return nil
   }
 
   private func handleMonitoredLeftMouseDown(_ event: NSEvent) -> NSEvent? {
@@ -1991,7 +2001,7 @@ extension GhosttySurfaceView {
 
     static func installIfNeeded() {
       guard monitor == nil else { return }
-      monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyUp, .leftMouseDown, .flagsChanged]) { event in
+      monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .leftMouseDown, .flagsChanged]) { event in
         route(event)
       }
       guard monitor != nil else {
@@ -2111,6 +2121,9 @@ extension GhosttySurfaceView {
 
     private static func route(_ event: NSEvent) -> NSEvent? {
       switch event.type {
+      case .keyDown:
+        guard let surface = NSApp.keyWindow?.firstResponder as? GhosttySurfaceView else { return event }
+        return surface.localEventKeyDown(event)
       case .keyUp:
         let holder = takeKeyHolder(for: event.keyCode)
         let action = keyUpAction(

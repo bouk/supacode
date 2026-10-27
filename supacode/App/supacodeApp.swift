@@ -48,6 +48,17 @@ final class SupacodeAppDelegate: NSObject, NSApplicationDelegate {
   private var bufferedDeeplinkURLs: [URL] = []
 
   nonisolated deinit {}
+  func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+    let menu = NSMenu()
+    let item = NSMenuItem(title: "Quit and Terminate Sessions", action: #selector(quitAndTerminateSessions(_:)), keyEquivalent: "")
+    item.target = self
+    menu.addItem(item)
+    return menu
+  }
+
+  @objc private func quitAndTerminateSessions(_ sender: Any?) {
+    appStore?.send(.requestQuitAndTerminateSessions)
+  }
 
   func applicationWillTerminate(_ notification: Notification) {
     // Release the global Carbon registration explicitly rather than leaning on
@@ -694,6 +705,10 @@ struct SupacodeApp: App {
         .help("Submit GitHub Issue")
       }
       CommandGroup(replacing: .appTermination) {
+        Button("Quit and Terminate Sessions") {
+          store.send(.requestQuitAndTerminateSessions)
+        }
+        .help("Quit Supacode and stop all terminal sessions")
         Button("Quit Supacode") {
           store.send(.requestQuit)
         }
