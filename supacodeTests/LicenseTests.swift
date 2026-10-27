@@ -391,7 +391,7 @@ struct LicenseTests {
     } withDependencies: {
       $0[LicenseClient.self].isEnforced = true
       $0[LicenseClient.self].authorizeCreation = { _ in throw LicenseError.licenseRequired }
-      $0[GitClientDependency.self].createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0[GitClientDependency.self].createWorktreeStream = { _, _, _, _, _, _, _, _ in
         calls.withValue { $0 += 1 }
         return AsyncThrowingStream { $0.finish() }
       }

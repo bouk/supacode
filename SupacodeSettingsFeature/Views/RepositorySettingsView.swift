@@ -42,6 +42,12 @@ public struct RepositorySettingsView: View {
         }
       }
       Section {
+        Toggle(isOn: settings.prewarmWorktree) {
+          Text("Prewarm a worktree")
+          Text("Keep one checkout ready to speed up new worktrees.")
+        }
+        .disabled(store.host != nil)
+        .help("Prepare one local checkout in the background for faster worktree creation.")
         Picker(selection: settings.copyIgnoredOnWorktreeCreate) {
           Text("Global \(Text(store.globalCopyIgnoredOnWorktreeCreate ? "Yes" : "No").foregroundStyle(.secondary))")
             .tag(Bool?.none)

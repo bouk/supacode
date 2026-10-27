@@ -1,9 +1,56 @@
 import Foundation
 import Testing
 
+@testable import SupacodeSettingsShared
 @testable import supacode
 
 struct GitRemoteInfoTests {
+  @Test func nativeRemoteDiscoveryMatchesGitAndAppliesURLRewrites() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: "native-remotes-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let path = root.path(percentEncoded: false)
+    func git(_ arguments: [String]) async throws {
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+      process.arguments = arguments
+      process.environment = ProcessInfo.processInfo.environment.merging([
+        "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"
+      ]) { _, value in value }
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = FileHandle.nullDevice
+      try await process.runToExit()
+      guard process.terminationStatus == 0 else { throw CocoaError(.fileReadUnknown) }
+    }
+    try await git(["init", path])
+    try await git(["-C", path, "remote", "add", "origin", "/tmp/local-repository"])
+    try await git(["-C", path, "remote", "add", "alpha", "https://gitlab.com/group/project.git"])
+    try await git(["-C", path, "remote", "add", "beta", "https://github.com/team/project.git"])
+    let shell = ShellClient(
+      run: { _, _, _ in
+        Issue.record("Native remote discovery launched a subprocess")
+        throw CocoaError(.fileReadUnknown)
+      },
+      runLoginImpl: { _, _, _, _ in
+        Issue.record("Native remote discovery launched a login shell")
+        throw CocoaError(.fileReadUnknown)
+      }
+    )
+    let native = GitClient(shell: shell, nativeReferences: true)
+    let gitClient = GitClient()
+    #expect(await native.remote(for: root) == gitClient.remote(for: root))
+    #expect(await native.remoteInfo(for: root) == gitClient.remoteInfo(for: root))
+    #expect(await native.remote(for: root)?.host == "gitlab.com")
+    #expect(await native.remoteInfo(for: root)?.host == "github.com")
+    try await git(["-C", path, "remote", "set-url", "origin", "shortcut:team/repo.git"])
+    try await git(["-C", path, "config", "url.https://github.com/.insteadOf", "shortcut:"])
+    #expect(await native.remote(for: root) == gitClient.remote(for: root))
+    #expect(await native.remoteInfo(for: root) == gitClient.remoteInfo(for: root))
+    #expect(await native.remote(for: root)?.rawURL == "https://github.com/team/repo.git")
+    try await git(["-C", path, "config", "--add", "remote.origin.url", "https://github.com/other/repo.git"])
+    #expect(await native.remote(for: root) == gitClient.remote(for: root))
+  }
+
   @Test func parseSSHRemote() {
     let info = GitClient.parseGithubRemoteInfo("git@github.com:octo/repo.git")
     #expect(info == GithubRemoteInfo(host: "github.com", owner: "octo", repo: "repo"))

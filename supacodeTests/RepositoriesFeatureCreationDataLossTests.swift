@@ -169,10 +169,16 @@ struct RepositoriesFeatureCreationDataLossTests {
     return output.trimmingCharacters(in: .whitespacesAndNewlines) == "refs/heads/\(name)"
   }
 
-  @Test(.dependencies) func successfulCreationIsOwnedAndKept() async throws {
+  @Test(.dependencies, arguments: [false, true])
+  func successfulCreationIsOwnedAndKept(prewarm: Bool) async throws {
     let sandbox = try await Sandbox()
     defer { sandbox.cleanup() }
     useSandboxBase(sandbox)
+    @Shared(.repositorySettings(sandbox.repoURL)) var repositorySettings
+    $repositorySettings.withLock { $0.prewarmWorktree = prewarm }
+    if prewarm {
+      try await GitClientDependency.liveValue.preparePrewarmedWorktree(sandbox.repoURL, "main")
+    }
     let store = makeStore(
       sandbox: sandbox,
       worktrees: [makeWorktree(at: sandbox.repoURL, branch: "main", sandbox: sandbox)]

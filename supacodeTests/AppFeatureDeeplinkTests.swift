@@ -2703,7 +2703,7 @@ struct AppFeatureDeeplinkTests {
       $0.gitClient.automaticWorktreeBaseRef = { _ in "origin/main" }
       $0.gitClient.ignoredFileCount = { _ in 0 }
       $0.gitClient.untrackedFileCount = { _ in 0 }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, directoryOverride in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, directoryOverride, _ in
         observedDirectoryOverride.withValue { $0 = directoryOverride }
         return AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
@@ -2761,7 +2761,7 @@ struct AppFeatureDeeplinkTests {
       $0.gitClient.setUpstreamBranch = { branch, upstream, root in
         observedSetUpstream.withValue { $0 = SetUpstreamInvocation(branch: branch, upstream: upstream, root: root) }
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -2811,7 +2811,7 @@ struct AppFeatureDeeplinkTests {
       $0.gitClient.ignoredFileCount = { _ in 0 }
       $0.gitClient.untrackedFileCount = { _ in 0 }
       $0.gitClient.upstreamBranchExists = { _, _ in false }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         streamStarted.setValue(true)
         return AsyncThrowingStream { $0.finish() }
       }
@@ -2862,7 +2862,7 @@ struct AppFeatureDeeplinkTests {
       $0.gitClient.setUpstreamBranch = { _, upstream, _ in
         observedUpstream.setValue(upstream)
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -2913,7 +2913,7 @@ struct AppFeatureDeeplinkTests {
       $0.gitClient.unsetUpstreamBranch = { branch, _ in
         observedUnset.setValue(branch)
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -2962,7 +2962,7 @@ struct AppFeatureDeeplinkTests {
       $0.gitClient.automaticWorktreeBaseRef = { _ in "origin/main" }
       $0.gitClient.ignoredFileCount = { _ in 0 }
       $0.gitClient.untrackedFileCount = { _ in 0 }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()

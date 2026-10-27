@@ -16,6 +16,7 @@ struct WorktreeLoadingInfo: Hashable {
     let statusDetail: String?
     let statusCommand: String?
     let statusLines: [String]
+    var checkoutFraction: Double? = nil
   }
 
   var isFolder: Bool {

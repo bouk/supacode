@@ -7,19 +7,22 @@ struct WorktreeLoadingView: View {
   var body: some View {
     let subtitle = subtitleText()
     VStack(spacing: 12) {
-      ProgressView()
-        .controlSize(.large)
+      if let progress = info.progress {
+        if let fraction = progress.checkoutFraction {
+          ProgressView(value: fraction) { Text("Checking out files") }
+            .frame(maxWidth: 320)
+        } else {
+          ProgressView("Creating worktree")
+            .progressViewStyle(.linear)
+            .frame(maxWidth: 320)
+        }
+      } else {
+        ProgressView()
+          .controlSize(.large)
+      }
       VStack(spacing: 4) {
         Text(info.name)
           .appFont(.title3)
-        if let command = info.progress?.statusCommand {
-          Text(command)
-            .appFont(.subheadline)
-            .monospaced()
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-        }
         Text(subtitle)
           .appFont(.subheadline)
           .monospaced()
@@ -36,8 +39,9 @@ struct WorktreeLoadingView: View {
 
   private func subtitleText() -> String {
     if let progress = info.progress {
-      let tail = progress.statusLines.suffix(5)
-      guard tail.isEmpty else { return tail.joined(separator: "\n") }
+      if progress.checkoutFraction != nil || !progress.statusLines.isEmpty {
+        return progress.statusTitle ?? "Creating worktree"
+      }
       if let text = progress.statusDetail ?? progress.statusTitle { return text }
     }
     let noun = info.isFolder ? "folder" : "worktree"
@@ -50,39 +54,20 @@ struct WorktreeLoadingView: View {
   }
 }
 
-#Preview("Streaming output") {
-  @Previewable @State var statusLines: [String] = []
+#Preview("Creating worktree") {
   WorktreeLoadingView(
     info: WorktreeLoadingInfo(
-      name: "sbertix/small-ui-improvements",
+      name: "feature/example",
       repositoryName: "supacode",
       kind: .creating(
         WorktreeLoadingInfo.Progress(
           statusTitle: "Creating worktree",
-          statusDetail: nil,
-          statusCommand: "git worktree add",
-          statusLines: statusLines
+          statusDetail: "Preparing checkout",
+          statusCommand: nil,
+          statusLines: []
         )
       )
     )
   )
   .frame(width: 600, height: 400)
-  .task {
-    // Drip lines in so the preview exercises the trailing-lines
-    // animation rather than showing a frozen tail.
-    let pool = [
-      "Preparing worktree (new branch 'sbertix/small-ui-improvements')",
-      "Enumerating objects: 1248, done.",
-      "Counting objects: 100% (1248/1248), done.",
-      "Compressing objects: 100% (512/512), done.",
-      "Writing objects: 100% (1248/1248), 3.21 MiB | 5.40 MiB/s, done.",
-      "Resolving deltas: 100% (842/842), done.",
-      "HEAD is now at c4e9be3 bump v0.8.1",
-    ]
-    let clock = ContinuousClock()
-    for line in pool {
-      try? await clock.sleep(for: .milliseconds(600))
-      statusLines.append(line)
-    }
-  }
 }

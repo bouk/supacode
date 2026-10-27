@@ -15,6 +15,8 @@ public nonisolated struct RepositorySettings: Codable, Equatable, Sendable {
   public var openActionID: String
   public var worktreeBaseRef: String?
   public var worktreeBaseDirectoryPath: String?
+  /// Whether to maintain one ready-to-use worktree for this repository.
+  public var prewarmWorktree: Bool
   public var copyIgnoredOnWorktreeCreate: Bool?
   public var copyUntrackedOnWorktreeCreate: Bool?
   public var pullRequestMergeStrategy: PullRequestMergeStrategy?
@@ -34,6 +36,7 @@ public nonisolated struct RepositorySettings: Codable, Equatable, Sendable {
     case openActionID
     case worktreeBaseRef
     case worktreeBaseDirectoryPath
+    case prewarmWorktree
     case copyIgnoredOnWorktreeCreate
     case copyUntrackedOnWorktreeCreate
     case pullRequestMergeStrategy
@@ -51,6 +54,7 @@ public nonisolated struct RepositorySettings: Codable, Equatable, Sendable {
     openActionID: OpenWorktreeAction.automaticSettingsID,
     worktreeBaseRef: nil,
     worktreeBaseDirectoryPath: nil,
+    prewarmWorktree: false,
     copyIgnoredOnWorktreeCreate: nil,
     copyUntrackedOnWorktreeCreate: nil,
     pullRequestMergeStrategy: nil,
@@ -68,6 +72,7 @@ public nonisolated struct RepositorySettings: Codable, Equatable, Sendable {
     openActionID: String,
     worktreeBaseRef: String?,
     worktreeBaseDirectoryPath: String? = nil,
+    prewarmWorktree: Bool = false,
     copyIgnoredOnWorktreeCreate: Bool? = nil,
     copyUntrackedOnWorktreeCreate: Bool? = nil,
     pullRequestMergeStrategy: PullRequestMergeStrategy? = nil,
@@ -83,6 +88,7 @@ public nonisolated struct RepositorySettings: Codable, Equatable, Sendable {
     self.openActionID = openActionID
     self.worktreeBaseRef = worktreeBaseRef
     self.worktreeBaseDirectoryPath = worktreeBaseDirectoryPath
+    self.prewarmWorktree = prewarmWorktree
     self.copyIgnoredOnWorktreeCreate = copyIgnoredOnWorktreeCreate
     self.copyUntrackedOnWorktreeCreate = copyUntrackedOnWorktreeCreate
     self.pullRequestMergeStrategy = pullRequestMergeStrategy
@@ -123,6 +129,7 @@ public nonisolated struct RepositorySettings: Codable, Equatable, Sendable {
       try container.decodeIfPresent(String.self, forKey: .worktreeBaseRef)
     worktreeBaseDirectoryPath =
       try container.decodeIfPresent(String.self, forKey: .worktreeBaseDirectoryPath)
+    prewarmWorktree = try container.decodeIfPresent(Bool.self, forKey: .prewarmWorktree) ?? false
     copyIgnoredOnWorktreeCreate =
       try container.decodeIfPresent(Bool.self, forKey: .copyIgnoredOnWorktreeCreate)
       ?? Self.default.copyIgnoredOnWorktreeCreate
@@ -157,6 +164,7 @@ public nonisolated struct RepositorySettings: Codable, Equatable, Sendable {
     try container.encode(openActionID, forKey: .openActionID)
     try container.encodeIfPresent(worktreeBaseRef, forKey: .worktreeBaseRef)
     try container.encodeIfPresent(worktreeBaseDirectoryPath, forKey: .worktreeBaseDirectoryPath)
+    try container.encode(prewarmWorktree, forKey: .prewarmWorktree)
     try container.encodeIfPresent(copyIgnoredOnWorktreeCreate, forKey: .copyIgnoredOnWorktreeCreate)
     try container.encodeIfPresent(copyUntrackedOnWorktreeCreate, forKey: .copyUntrackedOnWorktreeCreate)
     try container.encodeIfPresent(pullRequestMergeStrategy, forKey: .pullRequestMergeStrategy)

@@ -10,6 +10,8 @@ nonisolated struct WorktreeCreationProgress: Hashable, Sendable {
   var commandText: String?
   var latestOutputLine: String?
   var outputLines: [String]
+  var checkoutCompleted: Int?
+  var checkoutTotal: Int?
 
   init(
     stage: WorktreeCreationStage,
@@ -22,7 +24,9 @@ nonisolated struct WorktreeCreationProgress: Hashable, Sendable {
     fetchRemoteName: String? = nil,
     commandText: String? = nil,
     latestOutputLine: String? = nil,
-    outputLines: [String] = []
+    outputLines: [String] = [],
+    checkoutCompleted: Int? = nil,
+    checkoutTotal: Int? = nil
   ) {
     self.stage = stage
     self.worktreeName = worktreeName
@@ -35,6 +39,15 @@ nonisolated struct WorktreeCreationProgress: Hashable, Sendable {
     self.commandText = commandText
     self.latestOutputLine = latestOutputLine
     self.outputLines = outputLines
+    self.checkoutCompleted = checkoutCompleted
+    self.checkoutTotal = checkoutTotal
+  }
+
+  var checkoutFraction: Double? {
+    guard let completed = checkoutCompleted, let total = checkoutTotal,
+      total > 0, completed >= 0, completed <= total
+    else { return nil }
+    return Double(completed) / Double(total)
   }
 
   var titleText: String {

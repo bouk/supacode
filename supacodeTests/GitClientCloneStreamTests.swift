@@ -264,6 +264,55 @@ struct GitClientCloneStreamCleanupTests {
 }
 
 struct GitClientCloneStreamInvocationTests {
+  @Test func nativeCloneChecksOutRequestedBranch() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: "native-clone-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appending(path: "source")
+    let destination = root.appending(path: "destination")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    func git(_ arguments: [String]) async throws {
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+      process.arguments = arguments
+      process.environment = ProcessInfo.processInfo.environment.merging([
+        "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.com",
+      ]) { _, value in value }
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = FileHandle.nullDevice
+      try await process.runToExit()
+      guard process.terminationStatus == 0 else { throw CocoaError(.fileReadUnknown) }
+    }
+    let path = source.path(percentEncoded: false)
+    try await git(["init", "-b", "main", path])
+    try "first\n".write(to: source.appending(path: "file"), atomically: true, encoding: .utf8)
+    try await git(["-C", path, "add", "file"])
+    try await git(["-C", path, "commit", "-m", "first"])
+    try await git(["-C", path, "checkout", "-b", "feature"])
+    try "feature\n".write(to: source.appending(path: "file"), atomically: true, encoding: .utf8)
+    try await git(["-C", path, "commit", "-am", "feature"])
+    try NativeGitRepository.clone(
+      url: source.absoluteString, destination: destination, branch: "feature", depth: nil,
+      cancelled: { false }, progress: { _ in })
+    #expect(try String(contentsOf: destination.appending(path: "file"), encoding: .utf8) == "feature\n")
+    #expect(try NativeGitRepository.symbolicHead(at: destination) == "feature")
+    let invalid = root.appending(path: "invalid")
+    #expect(throws: (any Error).self) {
+      try NativeGitRepository.clone(
+        url: source.absoluteString, destination: invalid, branch: "missing", depth: nil,
+        cancelled: { false }, progress: { _ in })
+    }
+    #expect(!FileManager.default.fileExists(atPath: invalid.path(percentEncoded: false)))
+    let cancelled = root.appending(path: "cancelled")
+    #expect(throws: CancellationError.self) {
+      try NativeGitRepository.clone(
+        url: source.absoluteString, destination: cancelled, branch: nil, depth: nil,
+        cancelled: { true }, progress: { _ in })
+    }
+    #expect(!FileManager.default.fileExists(atPath: cancelled.path(percentEncoded: false)))
+  }
+
   @Test func invokesGitCloneWithFailFastEnvAndYieldsDestination() async throws {
     let recorder = GitShellInvocationRecorder()
     let shell = ShellClient(

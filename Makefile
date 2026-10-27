@@ -31,6 +31,7 @@ BODY ?=
 # Export so headline markdown reaches the script without a shell re-parse of quotes/backticks.
 export VERSION BUILD TITLE BODY
 XCODEBUILD_FLAGS ?=
+WT_CANDIDATE ?=
 SUPACODE_SKIP_PREFLIGHT ?=
 # Parallel test execution (Swift Testing in-process + one process per test bundle).
 # Escape hatch: make test TEST_PARALLEL=NO.
@@ -47,7 +48,7 @@ TEST_RESULT_BUNDLE := build/supacode-tests.xcresult
 SELECT_DEVELOPER_DIR = DEVELOPER_DIR="$$(./scripts/select-developer-dir.sh)"; export DEVELOPER_DIR
 
 .DEFAULT_GOAL := help
-.PHONY: doctor preflight build-ghostty-xcframework build-zmx generate-project generate-project-sources inspect-dependencies warm-cache build-app run-app install-dev-build archive export-archive format lint check test bump-version bump-and-release log-stream
+.PHONY: doctor preflight build-ghostty-xcframework build-zmx build-libgit2 build-native-wt generate-project generate-project-sources inspect-dependencies warm-cache build-app run-app install-dev-build archive export-archive format lint check test test-native-wt-root test-native-wt-switch test-native-wt-prewarm test-native-wt-filter-process test-native-git-index test-wt-compatibility bump-version bump-and-release log-stream
 
 ifdef CI
 TUIST_INSTALL_FLAGS := --force-resolved-versions
@@ -90,6 +91,24 @@ $(TUIST_RELEASE_GENERATION_STAMP): $(TUIST_GENERATION_INPUTS) $(TUIST_INSTALL_ST
 doctor: # Diagnose build prerequisites and print the fix for each failure
 	@./scripts/doctor.sh
 
+test-wt-compatibility: # Run the pinned wt contract; set WT_CANDIDATE to test a replacement
+	@./scripts/test-wt-compatibility.sh $(if $(WT_CANDIDATE),"$(WT_CANDIDATE)")
+
+test-native-wt-root: build-native-wt # Test native wt repository discovery
+	@./scripts/test-native-wt-root.sh
+
+test-native-wt-switch: build-native-wt # Test native wt creation and Git checkout compatibility
+	@./scripts/test-native-wt-switch.sh
+
+test-native-wt-prewarm: build-native-wt # Test the native prewarm checkout pool
+	@./scripts/test-native-wt-prewarm.sh
+
+test-native-wt-filter-process: build-native-wt # Test Git's process filter protocol
+	@./scripts/test-native-wt-filter-process.sh
+
+test-native-git-index: build-libgit2 # Test native staging and index locking
+	@./scripts/test-native-git-index.sh
+
 # Order-only preflight on the install stamp, so every build flow fails fast with
 # doctor's actionable message before tuist / xcodebuild / zig run. Never forces a
 # rebuild. Skipped when SUPACODE_SKIP_PREFLIGHT is set (CI sets it above).
@@ -101,6 +120,12 @@ build-ghostty-xcframework: | preflight # Build ghostty framework
 
 build-zmx: | preflight # Build bundled zmx binary from ThirdParty/zmx submodule
 	./scripts/build-zmx.sh
+
+build-libgit2: | preflight # Build the pinned libgit2 for the native wt port
+	./scripts/build-libgit2.sh
+
+build-native-wt: | preflight # Build the in-progress native wt candidate
+	./scripts/build-native-wt.sh
 
 inspect-dependencies: $(TUIST_INSTALL_STAMP) # Check for implicit Tuist dependencies
 	mise exec -- tuist inspect dependencies --only implicit

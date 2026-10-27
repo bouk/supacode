@@ -55,6 +55,31 @@ nonisolated final class GitWorktreeDiscoveryRecorder: @unchecked Sendable {
 }
 
 struct GitClientWorktreeDiscoveryTests {
+  @Test func nativeRepositoryRootResolvesNestedDirectory() async throws {
+    let repository = FileManager.default.temporaryDirectory
+      .appending(path: "native-git-root-\(UUID().uuidString)", directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: repository) }
+    let git = repository.appending(path: ".git", directoryHint: .isDirectory)
+    let nested = repository.appending(path: "nested", directoryHint: .isDirectory)
+    for directory in [git.appending(path: "objects"), git.appending(path: "refs/heads"), nested] {
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+    try "ref: refs/heads/main\n".write(to: git.appending(path: "HEAD"), atomically: true, encoding: .utf8)
+    try "[core]\nrepositoryformatversion = 0\nbare = false\n".write(
+      to: git.appending(path: "config"), atomically: true, encoding: .utf8)
+    let root = try NativeGitRepository.root(at: nested)
+    #expect(root.resolvingSymlinksInPath() == repository.resolvingSymlinksInPath())
+    let liveRoot = try await GitClientDependency.liveValue.repoRoot(nested)
+    #expect(liveRoot.resolvingSymlinksInPath() == repository.resolvingSymlinksInPath())
+    let executable = try #require(Bundle.main.url(forResource: "wt", withExtension: nil, subdirectory: "git-wt"))
+    let handle = try FileHandle(forReadingFrom: executable)
+    defer { try? handle.close() }
+    #expect(try handle.read(upToCount: 4) == Data([0xcf, 0xfa, 0xed, 0xfe]))
+    let worktrees = try await GitClient().worktrees(for: repository)
+    #expect(worktrees.count == 1)
+    #expect(worktrees.first?.workingDirectory.resolvingSymlinksInPath() == repository.resolvingSymlinksInPath())
+  }
+
   @Test func repoRootUsesDirectBundledWtExecution() async throws {
     let recorder = GitWorktreeDiscoveryRecorder()
     let shell = ShellClient(
@@ -133,7 +158,7 @@ struct GitClientWorktreeDiscoveryTests {
     let runs = recorder.runInvocations()
     #expect(runs.count == 1)
     if let invocation = runs.first {
-      #expect(invocation.arguments == ["ls", "--json"])
+      #expect(invocation.arguments == ["__app-ls"])
       #expect(invocation.currentDirectoryPath == "/tmp/repo")
     } else {
       Issue.record("Expected one direct bundled wt invocation for worktree discovery")

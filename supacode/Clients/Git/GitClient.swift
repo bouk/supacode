@@ -54,6 +54,7 @@ enum GitClientError: LocalizedError {
 }
 
 enum GitWorktreeCreateEvent: Equatable, Sendable {
+  case checkoutProgress(completed: Int, total: Int)
   case outputLine(ShellStreamLine)
   case finished(Worktree)
 }
@@ -91,10 +92,12 @@ struct GitClient {
 
   private let shell: ShellClient
   private let referenceQueries: GitReferenceQueries
+  private let nativeReferences: Bool
 
-  nonisolated init(shell: ShellClient = .live) {
+  nonisolated init(shell: ShellClient = .live, nativeReferences: Bool = false) {
     self.shell = shell
-    self.referenceQueries = GitReferenceQueries(shell: shell)
+    self.nativeReferences = nativeReferences
+    self.referenceQueries = GitReferenceQueries(shell: shell, nativeLocal: nativeReferences)
   }
 
   nonisolated func repoRoot(for path: URL) async throws -> URL {
@@ -293,19 +296,28 @@ struct GitClient {
         "Backfilled Supacode lock for worktree \(entry.worktreeDirectory.lastPathComponent)"
       )
     }
-    do {
-      _ = try await runGit(
-        operation: .worktreePrune,
-        arguments: ["-C", repoRoot.path(percentEncoded: false), "worktree", "prune"]
-      )
-    } catch {
-      gitLogger.warning(
-        "Reconcile prune failed for \(repoRoot.lastPathComponent): \(error)"
-      )
+    if nativeReferences {
+      for entry in entries where Self.isGitdirLinkBroken(worktreeDirectory: entry.worktreeDirectory) {
+        do {
+          try NativeGitRepository.pruneMissingWorktree(at: repoRoot, name: entry.adminDirectory.lastPathComponent)
+        } catch {
+          gitLogger.warning("Reconcile prune failed for \(entry.adminDirectory.lastPathComponent): \(error)")
+        }
+      }
+    } else {
+      do {
+        _ = try await runGit(
+          operation: .worktreePrune,
+          arguments: ["-C", repoRoot.path(percentEncoded: false), "worktree", "prune"]
+        )
+      } catch {
+        gitLogger.warning("Reconcile prune failed for \(repoRoot.lastPathComponent): \(error)")
+      }
     }
   }
 
   nonisolated func gitCommonDirectory(for repoRoot: URL) async throws -> URL {
+    if nativeReferences { return try NativeGitRepository.commonDirectory(at: repoRoot) }
     let path = repoRoot.path(percentEncoded: false)
     let output = try await runGit(
       operation: .gitCommonDir,
@@ -478,6 +490,11 @@ struct GitClient {
   }
 
   nonisolated func localBranchNames(for repoRoot: URL) async throws -> Set<String> {
+    if nativeReferences {
+      return try await Task.detached {
+        try NativeGitRepository.localBranchNames(at: repoRoot)
+      }.value
+    }
     let path = repoRoot.path(percentEncoded: false)
     let output = try await runGit(
       operation: .branchNames,
@@ -508,6 +525,11 @@ struct GitClient {
     to newName: String,
     for repoRoot: URL
   ) async throws {
+    if nativeReferences {
+      do { try NativeGitRepository.renameBranch(oldName, to: newName, at: repoRoot) }
+      catch { throw GitClientError.commandFailed(command: "rename branch", message: error.localizedDescription) }
+      return
+    }
     let path = repoRoot.path(percentEncoded: false)
     _ = try await runGit(
       operation: .branchRename,
@@ -516,6 +538,7 @@ struct GitClient {
   }
 
   nonisolated func isValidBranchName(_ branchName: String, for repoRoot: URL) async -> Bool {
+    if nativeReferences { return (try? NativeGitRepository.validBranchName(branchName, at: repoRoot)) ?? false }
     let path = repoRoot.path(percentEncoded: false)
     do {
       _ = try await runGit(
@@ -546,6 +569,7 @@ struct GitClient {
 
   /// Returns the list of configured remote names for a repository.
   nonisolated func remoteNames(for repoRoot: URL) async throws -> [String] {
+    if nativeReferences { return try await referenceQueries.remoteNames(for: repoRoot) }
     let path = repoRoot.path(percentEncoded: false)
     let output = try await runGit(
       operation: .remoteList,
@@ -560,6 +584,12 @@ struct GitClient {
 
   /// Fetches updates from the given remote.
   nonisolated func fetchRemote(_ remote: String, for repoRoot: URL) async throws {
+    if nativeReferences {
+      try await Task.detached(priority: .userInitiated) {
+        try NativeGitRepository.fetch(remote, at: repoRoot)
+      }.value
+      return
+    }
     let path = repoRoot.path(percentEncoded: false)
     _ = try await runGit(
       operation: .fetchOrigin,
@@ -573,6 +603,11 @@ struct GitClient {
 
   /// Sets `branch`'s upstream so pulls and ahead/behind status compare against `upstream`.
   nonisolated func setUpstreamBranch(_ branch: String, to upstream: String, for repoRoot: URL) async throws {
+    if nativeReferences {
+      do { try NativeGitRepository.setUpstream(upstream, for: branch, at: repoRoot) }
+      catch { throw GitClientError.commandFailed(command: "set upstream", message: error.localizedDescription) }
+      return
+    }
     let path = repoRoot.path(percentEncoded: false)
     _ = try await runGit(
       operation: .setUpstream,
@@ -584,6 +619,11 @@ struct GitClient {
   /// "no such branch" as missing upstream information; either already satisfies
   /// the intent, so that failure is swallowed.
   nonisolated func unsetUpstreamBranch(_ branch: String, for repoRoot: URL) async throws {
+    if nativeReferences {
+      do { try NativeGitRepository.setUpstream(nil, for: branch, at: repoRoot) }
+      catch { throw GitClientError.commandFailed(command: "unset upstream", message: error.localizedDescription) }
+      return
+    }
     let path = repoRoot.path(percentEncoded: false)
     do {
       _ = try await runGit(
@@ -603,6 +643,7 @@ struct GitClient {
   /// as is. Throws when the check itself fails, so a missing branch is never
   /// conflated with an unverifiable one.
   nonisolated func upstreamBranchExists(_ ref: String, for repoRoot: URL) async throws -> Bool {
+    if nativeReferences { return try NativeGitRepository.upstreamExists(ref, at: repoRoot) }
     let path = repoRoot.path(percentEncoded: false)
     let isQualifiedBranchRef = ref.hasPrefix("refs/heads/") || ref.hasPrefix("refs/remotes/")
     let candidates = isQualifiedBranchRef ? [ref] : ["refs/heads/\(ref)", "refs/remotes/\(ref)"]
@@ -627,6 +668,7 @@ struct GitClient {
   }
 
   nonisolated func ignoredFileCount(for repoRoot: URL) async throws -> Int {
+    if nativeReferences { return try NativeGitRepository.otherFileCount(at: repoRoot, ignored: true) }
     let path = repoRoot.path(percentEncoded: false)
     let output = try await runGit(
       operation: .ignoredFileCount,
@@ -636,6 +678,7 @@ struct GitClient {
   }
 
   nonisolated func untrackedFileCount(for repoRoot: URL) async throws -> Int {
+    if nativeReferences { return try NativeGitRepository.otherFileCount(at: repoRoot, ignored: false) }
     let path = repoRoot.path(percentEncoded: false)
     let output = try await runGit(
       operation: .untrackedFileCount,
@@ -649,6 +692,16 @@ struct GitClient {
   /// no such blob (a directory named `supaignore` counts as none); throws on a
   /// genuine lookup failure so the caller fails safe.
   nonisolated func committedSupaignore(for repoRoot: URL, baseRef: String) async throws -> String? {
+    if nativeReferences {
+      let reference = baseRef.isEmpty ? "HEAD" : baseRef
+      guard let data = try NativeGitRepository.committedFile(
+        at: repoRoot, ref: reference, path: SupaignoreMerge.fileName)
+      else { return nil }
+      guard let output = String(data: data, encoding: .utf8) else {
+        throw GitClientError.commandFailed(command: "read supaignore", message: "supaignore is not valid UTF-8")
+      }
+      return output.isEmpty ? nil : output
+    }
     let path = repoRoot.path(percentEncoded: false)
     let reference = baseRef.isEmpty ? "HEAD" : baseRef
     let objectSpec = "\(reference):\(SupaignoreMerge.fileName)"
@@ -702,6 +755,14 @@ struct GitClient {
     copyUntracked: Bool,
     excludePatterns: String
   ) async throws -> WorktreeCopyPlan {
+    if nativeReferences {
+      return try await Task.detached(priority: .userInitiated) {
+        let ignored = copyIgnored ? try NativeGitRepository.otherFiles(at: repoRoot, ignored: true) : []
+        let untracked = copyUntracked ? try NativeGitRepository.otherFiles(at: repoRoot, ignored: false) : []
+        let excluded = try NativeGitRepository.excludedPaths(ignored + untracked, patterns: excludePatterns, at: repoRoot)
+        return WorktreeCopyPlan.survivors(ignoredCandidates: ignored, untrackedCandidates: untracked, excluded: excluded)
+      }.value
+    }
     let path = repoRoot.path(percentEncoded: false)
     let ignoredCandidates =
       copyIgnored
@@ -782,13 +843,22 @@ struct GitClient {
     return createdWorktree
   }
 
+  nonisolated func preparePrewarmedWorktree(for repoRoot: URL, baseRef: String) async throws {
+    let wtURL = try wtScriptURL()
+    let args = baseRef.isEmpty ? ["__prewarm"] : ["__prewarm", "--from", baseRef]
+    let command = ["/usr/bin/env", wtURL.path(percentEncoded: false)] + args
+    let invocation = Self.pathAugmentedInvocation(command: command)
+    _ = try await shell.runLogin(invocation.executable, invocation.arguments, repoRoot)
+  }
+
   nonisolated func createWorktreeStream(
     named name: String,
     in repoRoot: URL,
     baseDirectory: URL,
     copyFiles: (ignored: Bool, untracked: Bool),
     baseRef: String,
-    directoryOverride: URL? = nil
+    directoryOverride: URL? = nil,
+    prewarm: Bool = false
   ) -> AsyncThrowingStream<GitWorktreeCreateEvent, Error> {
     AsyncThrowingStream { continuation in
       // Let `git worktree add` run to completion even if the consumer drops the
@@ -805,7 +875,8 @@ struct GitClient {
             baseRef: baseRef,
             directoryOverride: directoryOverride
           )
-          let localeArguments = ["LANG=C", "LC_ALL=C", "LC_MESSAGES=C"]
+          var localeArguments = ["LANG=C", "LC_ALL=C", "LC_MESSAGES=C", "SUPACODE_WT_PROGRESS=1"]
+          if prewarm { localeArguments.append("SUPACODE_USE_PREWARM=1") }
           let baseCommand =
             ["/usr/bin/env"] + localeArguments
             + [wtURL.path(percentEncoded: false)] + arguments
@@ -822,6 +893,10 @@ struct GitClient {
             ) {
               switch streamEvent {
               case .line(let line):
+                if line.source == .stderr, let progress = Self.checkoutProgress(from: line.text) {
+                  continuation.yield(.checkoutProgress(completed: progress.completed, total: progress.total))
+                  continue
+                }
                 continuation.yield(.outputLine(line))
                 if line.source == .stdout {
                   let trimmed = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1156,6 +1231,7 @@ struct GitClient {
   /// host). Replaces the former local-HEAD-file read, which couldn't resolve a
   /// remote worktree's branch.
   nonisolated func symbolicHeadBranch(at worktreeURL: URL) async -> String? {
+    if nativeReferences { return try? NativeGitRepository.symbolicHead(at: worktreeURL) }
     let path = worktreeURL.path(percentEncoded: false)
     guard
       let output = try? await runGit(
@@ -1172,6 +1248,11 @@ struct GitClient {
   nonisolated func lineChanges(at worktreeURL: URL) async -> (added: Int, removed: Int)? {
     if await isWorktreeIndexLocked(worktreeURL) {
       return nil
+    }
+    if nativeReferences {
+      return try? await Task.detached(priority: .utility) {
+        try NativeGitRepository.lineChanges(at: worktreeURL)
+      }.value
     }
     let path = worktreeURL.path(percentEncoded: false)
     do {
@@ -1191,6 +1272,17 @@ struct GitClient {
   /// genuinely clean. `--no-optional-locks` keeps the poll lock-free, and
   /// `--ignored=matching` reports a wholly-ignored directory as one entry.
   nonisolated func fileStatus(at worktreeURL: URL) async -> GitStatusSnapshot? {
+    if nativeReferences {
+      guard
+        let entries = try? await Task.detached(
+          priority: .utility,
+          operation: {
+            try NativeGitRepository.status(at: worktreeURL)
+          }
+        ).value
+      else { return nil }
+      return GitStatusSnapshot.fromNative(entries)
+    }
     let path = worktreeURL.path(percentEncoded: false)
     guard
       let output = try? await runGit(
@@ -1212,6 +1304,11 @@ struct GitClient {
   // `--literal-pathspecs` so a filename with pathspec magic (`*`, `?`, `[`)
   // never matches beyond the single file the confirmation named.
   nonisolated func stageFile(_ relativePath: String, in worktreeURL: URL) async throws {
+    if nativeReferences {
+      try await Task.detached(priority: .userInitiated) { try NativeGitRepository.stage(relativePath, at: worktreeURL) }
+        .value
+      return
+    }
     let path = worktreeURL.path(percentEncoded: false)
     // `git add` stages deletions too, so it covers every unstaged change.
     _ = try await runGit(
@@ -1222,6 +1319,12 @@ struct GitClient {
   }
 
   nonisolated func unstageFile(_ relativePath: String, in worktreeURL: URL) async throws {
+    if nativeReferences {
+      try await Task.detached(priority: .userInitiated) {
+        try NativeGitRepository.unstage(relativePath, at: worktreeURL)
+      }.value
+      return
+    }
     let path = worktreeURL.path(percentEncoded: false)
     // No explicit HEAD: on an unborn branch `git reset` falls back to the empty
     // tree, where naming HEAD would fail to resolve.
@@ -1235,6 +1338,12 @@ struct GitClient {
   /// Reverts a tracked path's index and worktree to HEAD. The discarded worktree
   /// content is not recoverable from the reflog, so callers must confirm first.
   nonisolated func discardTrackedFile(_ relativePath: String, in worktreeURL: URL) async throws {
+    if nativeReferences {
+      try await Task.detached(priority: .userInitiated) {
+        try NativeGitRepository.discardTracked(relativePath, at: worktreeURL)
+      }.value
+      return
+    }
     let path = worktreeURL.path(percentEncoded: false)
     _ = try await runGit(
       operation: .discardFile,
@@ -1262,6 +1371,9 @@ struct GitClient {
 
   /// First parseable remote (origin preferred), forge-blind.
   nonisolated func remote(for repositoryRoot: URL) async -> GitRemote? {
+    if nativeReferences {
+      return (try? NativeGitRepository.remoteURLs(at: repositoryRoot))?.compactMap(GitRemote.parse).first
+    }
     let path = repositoryRoot.path(percentEncoded: false)
     guard
       let remotesOutput = try? await runGit(
@@ -1300,6 +1412,9 @@ struct GitClient {
   }
 
   nonisolated func remoteInfo(for repositoryRoot: URL) async -> GithubRemoteInfo? {
+    if nativeReferences {
+      return (try? NativeGitRepository.remoteURLs(at: repositoryRoot))?.compactMap(Self.parseGithubRemoteInfo).first
+    }
     let path = repositoryRoot.path(percentEncoded: false)
     guard
       let remotesOutput = try? await runGit(
@@ -1342,6 +1457,16 @@ struct GitClient {
     // `worktreePath` feeds the git command, which runs over `shell` (ssh for a
     // remote worktree), so it's the display path for either kind.
     let worktreePath = worktree.workingDirectory.standardizedFileURL.path(percentEncoded: false)
+    let nativeAdminName: String?
+    if nativeReferences, let local = worktree.localWorkingDirectory,
+      let entries = try? await worktreeAdminEntries(for: worktree.repositoryRootURL)
+    {
+      let target = Self.canonicalPath(of: local)
+      nativeAdminName = entries.first { Self.canonicalPath(of: $0.worktreeDirectory) == target }?
+        .adminDirectory.lastPathComponent
+    } else {
+      nativeAdminName = nil
+    }
     // The lock release / relocate / trash steps are *local* filesystem work, so
     // they run only when a local URL exists. A remote worktree's
     // `localWorkingDirectory` is nil, so a coincidental local path at the same
@@ -1356,29 +1481,40 @@ struct GitClient {
     }
     // Prune is silent on still-locked entries; the --force --force
     // remove below is the actual guarantee.
-    _ = try? await runGit(
-      operation: .worktreePrune,
-      arguments: ["-C", rootPath, "worktree", "prune", "--expire=now"]
-    )
-    do {
-      try await runGitWorktreeRemove(rootPath: rootPath, worktreePath: worktreePath)
-    } catch {
+    if nativeReferences {
+      if let nativeAdminName {
+        try? NativeGitRepository.removeWorktree(
+          at: worktree.repositoryRootURL, name: nativeAdminName, removeWorkingDirectory: relocatedURL == nil)
+      }
+    } else {
+      _ = try? await runGit(
+        operation: .worktreePrune,
+        arguments: ["-C", rootPath, "worktree", "prune", "--expire=now"]
+      )
+      do {
+        try await runGitWorktreeRemove(rootPath: rootPath, worktreePath: worktreePath)
+      } catch {
       // A local worktree's directory was already relocated to the trash above,
       // so failing the git bookkeeping is non-fatal. A remote worktree has no
       // such fallback: the host remove is the only deletion, so surface the
       // failure unless git reports the entry was already gone.
-      if worktree.localWorkingDirectory == nil, !Self.isWorktreeAlreadyRemoved(error) {
-        throw error
+        if worktree.localWorkingDirectory == nil, !Self.isWorktreeAlreadyRemoved(error) {
+          throw error
+        }
       }
     }
     if deleteBranch, !worktree.name.isEmpty {
       // Don't leak the relocated trash dir below if the branch lookup throws.
       let names = (try? await localBranchNames(for: worktree.repositoryRootURL)) ?? []
       if names.contains(worktree.name.lowercased()) {
-        _ = try? await runGit(
-          operation: .branchDelete,
-          arguments: ["-C", rootPath, "branch", "-D", worktree.name]
-        )
+        if nativeReferences {
+          try? NativeGitRepository.deleteBranch(worktree.name, at: worktree.repositoryRootURL)
+        } else {
+          _ = try? await runGit(
+            operation: .branchDelete,
+            arguments: ["-C", rootPath, "branch", "-D", worktree.name]
+          )
+        }
       }
     }
     if let relocatedURL {
@@ -1514,7 +1650,7 @@ struct GitClient {
 
   nonisolated private func runWtList(repoRoot: URL) async throws -> String {
     let wtURL = try wtScriptURL()
-    let arguments = ["ls", "--json"]
+    let arguments = ["__app-ls"]
     return try await runBundledWtProcess(
       operation: .worktreeList,
       executableURL: wtURL,
@@ -1523,9 +1659,18 @@ struct GitClient {
     )
   }
 
+  nonisolated static func checkoutProgress(from line: String) -> (completed: Int, total: Int)? {
+    let parts = line.split(separator: " ")
+    guard parts.count == 3, parts[0] == "SUPACODE_CHECKOUT_PROGRESS",
+      let completed = Int(parts[1]), let total = Int(parts[2]),
+      total > 0, completed >= 0, completed <= total
+    else { return nil }
+    return (completed, total)
+  }
+
   nonisolated private func wtScriptURL() throws -> URL {
     guard let url = Bundle.main.url(forResource: "wt", withExtension: nil, subdirectory: "git-wt") else {
-      fatalError("Bundled wt script not found")
+      fatalError("Bundled native wt executable not found")
     }
     return url
   }

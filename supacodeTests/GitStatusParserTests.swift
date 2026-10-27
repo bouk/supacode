@@ -1,10 +1,118 @@
 import Foundation
+import SupacodeSettingsShared
 import Testing
 
 @testable import supacode
 
 @MainActor
 struct GitStatusParserTests {
+  @Test func nativeStatusMatchesGitForMixedChanges() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: "native-status-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    func git(_ args: [String]) async throws -> String {
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+      process.arguments = args
+      process.environment = ProcessInfo.processInfo.environment.merging([
+        "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.com",
+        "PATH": (ProcessInfo.processInfo.environment["PATH"] ?? "")
+          + ":/run/current-system/sw/bin:/opt/homebrew/bin:/usr/local/bin",
+      ]) { _, new in new }
+      let output = Pipe()
+      process.standardOutput = output
+      process.standardError = FileHandle.nullDevice
+      try await process.runToExit()
+      let bytes = output.fileHandleForReading.readDataToEndOfFile()
+      guard process.terminationStatus == 0 else { throw CocoaError(.fileReadUnknown) }
+      return String(decoding: bytes, as: UTF8.self)
+    }
+    let path = root.path(percentEncoded: false)
+    _ = try await git(["init", "-b", "main", path])
+    try FileManager.default.createDirectory(at: root.appending(path: "mixed"), withIntermediateDirectories: true)
+    for name in ["modified", "deleted", "cached", "mixed/tracked"] {
+      try "old\n".write(to: root.appending(path: name), atomically: true, encoding: .utf8)
+    }
+    try "ignored/\nmixed/hidden\n".write(to: root.appending(path: ".gitignore"), atomically: true, encoding: .utf8)
+    _ = try await git(["-C", path, "add", "."])
+    _ = try await git(["-C", path, "commit", "-m", "initial"])
+    try "staged\n".write(to: root.appending(path: "modified"), atomically: true, encoding: .utf8)
+    _ = try await git(["-C", path, "add", "modified"])
+    try "unstaged\n".write(to: root.appending(path: "modified"), atomically: true, encoding: .utf8)
+    try FileManager.default.removeItem(at: root.appending(path: "deleted"))
+    _ = try await git(["-C", path, "rm", "--cached", "cached"])
+    try "new\n".write(to: root.appending(path: "new file"), atomically: true, encoding: .utf8)
+    try FileManager.default.createDirectory(at: root.appending(path: "ignored"), withIntermediateDirectories: true)
+    try "ignored\n".write(to: root.appending(path: "ignored/file"), atomically: true, encoding: .utf8)
+    try "ignored\n".write(to: root.appending(path: "mixed/hidden"), atomically: true, encoding: .utf8)
+    let output = try await git([
+      "-C", path, "--no-optional-locks", "status", "--porcelain=v2", "-z",
+      "--untracked-files=all", "--ignored=matching", "--no-renames",
+    ])
+    let expected = GitStatusSnapshot.parse(porcelainV2: output)
+    let shell = ShellClient(
+      run: { _, _, _ in
+        Issue.record("Native status launched Git")
+        throw CocoaError(.fileReadUnknown)
+      },
+      runLoginImpl: { _, _, _, _ in
+        Issue.record("Native status launched a shell")
+        throw CocoaError(.fileReadUnknown)
+      }
+    )
+    let client = GitClient(shell: shell, nativeReferences: true)
+    let actual = try #require(await client.fileStatus(at: root))
+    #expect(actual == expected)
+    try await client.stageFile("new file", in: root)
+    let staged = try await git(["-C", path, "show", ":new file"])
+    #expect(staged == "new\n")
+    try await client.unstageFile("new file", in: root)
+    #expect(FileManager.default.fileExists(atPath: root.appending(path: "new file").path(percentEncoded: false)))
+    #expect(try await git(["-C", path, "diff", "--cached", "--name-only"]).contains("new file") == false)
+    try await client.discardTrackedFile("modified", in: root)
+    #expect(try String(contentsOf: root.appending(path: "modified"), encoding: .utf8) == "old\n")
+    #expect(try await git(["-C", path, "diff", "--cached", "--name-only"]).contains("modified") == false)
+
+    _ = try await git(["-C", path, "reset", "--hard", "HEAD"])
+    _ = try await git(["-C", path, "checkout", "-b", "other"])
+    try "other\n".write(to: root.appending(path: "modified"), atomically: true, encoding: .utf8)
+    _ = try await git(["-C", path, "add", "modified"])
+    _ = try await git(["-C", path, "commit", "-m", "other"])
+    _ = try await git(["-C", path, "checkout", "main"])
+    try "main\n".write(to: root.appending(path: "modified"), atomically: true, encoding: .utf8)
+    _ = try await git(["-C", path, "add", "modified"])
+    _ = try await git(["-C", path, "commit", "-m", "main"])
+    _ = try? await git(["-C", path, "merge", "other"])
+    let conflictOutput = try await git([
+      "-C", path, "--no-optional-locks", "status", "--porcelain=v2", "-z",
+      "--untracked-files=all", "--ignored=matching", "--no-renames",
+    ])
+    let conflict = try #require(await GitClient(shell: shell, nativeReferences: true).fileStatus(at: root))
+    #expect(conflict == GitStatusSnapshot.parse(porcelainV2: conflictOutput))
+    #expect(conflict.statuses["modified"]?.isConflicted == true)
+    if (try? await git(["lfs", "version"])) != nil {
+      _ = try await git(["-C", path, "merge", "--abort"])
+      _ = try await git(["-C", path, "lfs", "install", "--local"])
+      _ = try await git(["-C", path, "lfs", "track", "*.asset"])
+      let asset = root.appending(path: "file.asset")
+      try "lfs contents\n".write(to: asset, atomically: true, encoding: .utf8)
+      _ = try await git(["-C", path, "add", ".gitattributes", "file.asset"])
+      _ = try await git(["-C", path, "commit", "-m", "lfs"])
+      try FileManager.default.setAttributes(
+        [.modificationDate: Date(timeIntervalSince1970: 1_600_000_000)], ofItemAtPath: asset.path(percentEncoded: false)
+      )
+      let gitOutput = try await git([
+        "-C", path, "--no-optional-locks", "status", "--porcelain=v2", "-z",
+        "--untracked-files=all", "--ignored=matching", "--no-renames",
+      ])
+      let lfsStatus = try #require(await GitClient(shell: shell, nativeReferences: true).fileStatus(at: root))
+      #expect(lfsStatus == GitStatusSnapshot.parse(porcelainV2: gitOutput))
+      #expect(lfsStatus.statuses["file.asset"] == nil)
+    }
+  }
+
   // MARK: - Porcelain v2 record builders
 
   /// An ordinary (`1`) record: 8 fixed fields then the path.

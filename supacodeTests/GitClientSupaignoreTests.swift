@@ -5,6 +5,44 @@ import Testing
 @testable import supacode
 
 struct GitClientSupaignoreTests {
+  @Test func nativeCopyPreparationMatchesGitWithoutLaunchingSubprocesses() async throws {
+    let root = try await makeRepository()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try Self.write("nested", to: root, at: "nested/untracked.txt")
+    try Self.write("nested ignored", to: root, at: "nested/ignored.log")
+    try Self.write("nested ignored", to: root, at: "build/deep/another.o")
+    try FileManager.default.createDirectory(at: root.appending(path: "empty-dir"), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: root.appending(path: "build/empty"), withIntermediateDirectories: true)
+    let shell = ShellClient(
+      run: { _, _, _ in
+        Issue.record("Native copy preparation launched a subprocess")
+        throw CocoaError(.fileReadUnknown)
+      },
+      runLoginImpl: { _, _, _, _ in
+        Issue.record("Native copy preparation launched a login shell")
+        throw CocoaError(.fileReadUnknown)
+      }
+    )
+    let native = GitClient(shell: shell, nativeReferences: true)
+    let git = GitClient()
+    #expect(try await native.ignoredFileCount(for: root) == git.ignoredFileCount(for: root))
+    #expect(try await native.untrackedFileCount(for: root) == git.untrackedFileCount(for: root))
+    for patterns in ["build/\n*.log\n!keep.log\nnode_modules/\nsecret.env\n", "build/\n!build/app.o\n", "*.cache\n", ""] {
+      let actual = try await native.worktreeCopyPlan(
+        for: root, copyIgnored: true, copyUntracked: true, excludePatterns: patterns)
+      let expected = try await git.worktreeCopyPlan(
+        for: root, copyIgnored: true, copyUntracked: true, excludePatterns: patterns)
+      #expect(Set(actual.ignored) == Set(expected.ignored))
+      #expect(Set(actual.untracked) == Set(expected.untracked))
+    }
+    try FileManager.default.removeItem(at: root.appending(path: "supaignore"))
+    #expect(try await native.committedSupaignore(for: root, baseRef: "HEAD") == "secret.env\n")
+    #expect(try await native.committedSupaignore(for: root, baseRef: "") == "secret.env\n")
+    await #expect(throws: (any Error).self) {
+      _ = try await native.committedSupaignore(for: root, baseRef: "missing-ref")
+    }
+  }
+
   /// Builds a repo whose own `.gitignore` ignores several paths, plus untracked
   /// files and a nested git repo, so the plan can be checked for exact
   /// gitignore matching, isolation from the repo's `.gitignore`, negation, and
@@ -51,7 +89,7 @@ struct GitClientSupaignoreTests {
     // proving the exclusion query ignores the repo's own `.gitignore`. `!keep.log`
     // re-includes an otherwise-matched file.
     let patterns = "build/\n*.log\n!keep.log\nnode_modules/\nsecret.env\n"
-    let plan = try await GitClient().worktreeCopyPlan(
+    let plan = try await GitClient(nativeReferences: true).worktreeCopyPlan(
       for: root, copyIgnored: true, copyUntracked: true, excludePatterns: patterns)
 
     #expect(Set(plan.ignored) == ["keep.log", "data.cache"])
@@ -122,7 +160,7 @@ struct GitClientSupaignoreTests {
     // git never descends into an excluded directory, so `!build/app.o` cannot
     // re-include a file under `build/`; it stays excluded. Pinning this stops a
     // future "fix" that pre-expands directories.
-    let plan = try await GitClient().worktreeCopyPlan(
+    let plan = try await GitClient(nativeReferences: true).worktreeCopyPlan(
       for: root, copyIgnored: true, copyUntracked: false, excludePatterns: "build/\n!build/app.o\n")
 
     #expect(!plan.ignored.contains("build/app.o"))
@@ -132,7 +170,7 @@ struct GitClientSupaignoreTests {
     let root = try await makeRepository()
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let plan = try await GitClient().worktreeCopyPlan(
+    let plan = try await GitClient(nativeReferences: true).worktreeCopyPlan(
       for: root, copyIgnored: false, copyUntracked: true, excludePatterns: "secret.env\n")
 
     #expect(plan.ignored.isEmpty)
@@ -147,7 +185,7 @@ struct GitClientSupaignoreTests {
 
     // The byte-preserving read keeps the file's trailing newline (unlike the
     // trimmed `String` path); `SupaignoreMerge` normalizes separators downstream.
-    let committed = try await GitClient().committedSupaignore(for: root, baseRef: "HEAD")
+    let committed = try await GitClient(nativeReferences: true).committedSupaignore(for: root, baseRef: "HEAD")
     #expect(committed == "secret.env\n")
   }
 
@@ -165,7 +203,7 @@ struct GitClientSupaignoreTests {
     try await Self.runGit(["-C", path, "add", "supaignore"])
     try await Self.runGit(["-C", path, "commit", "-m", "init"])
 
-    let committed = try await GitClient().committedSupaignore(for: root, baseRef: "HEAD")
+    let committed = try await GitClient(nativeReferences: true).committedSupaignore(for: root, baseRef: "HEAD")
     #expect(committed == " #keepme\n")
   }
 
@@ -183,7 +221,7 @@ struct GitClientSupaignoreTests {
     try await Self.runGit(["-C", path, "add", "supaignore/inner.txt"])
     try await Self.runGit(["-C", path, "commit", "-m", "init"])
 
-    let committed = try await GitClient().committedSupaignore(for: root, baseRef: "HEAD")
+    let committed = try await GitClient(nativeReferences: true).committedSupaignore(for: root, baseRef: "HEAD")
     #expect(committed == nil)
   }
 
@@ -283,7 +321,7 @@ struct GitClientSupaignoreTests {
     // A bad ref is a real failure, not an absent file, so it must throw (letting
     // the caller fail safe) rather than resolve to nil.
     await #expect(throws: (any Error).self) {
-      _ = try await GitClient().committedSupaignore(for: root, baseRef: "no-such-ref")
+      _ = try await GitClient(nativeReferences: true).committedSupaignore(for: root, baseRef: "no-such-ref")
     }
   }
 
@@ -299,7 +337,7 @@ struct GitClientSupaignoreTests {
     try await Self.runGit(["-C", path, "add", "README.md"])
     try await Self.runGit(["-C", path, "commit", "-m", "init"])
 
-    let committed = try await GitClient().committedSupaignore(for: root, baseRef: "HEAD")
+    let committed = try await GitClient(nativeReferences: true).committedSupaignore(for: root, baseRef: "HEAD")
     #expect(committed == nil)
   }
 

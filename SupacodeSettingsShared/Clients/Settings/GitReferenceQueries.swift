@@ -43,12 +43,20 @@ public nonisolated struct GitRemoteBranchGroup: Sendable, Equatable, Identifiabl
 
 public nonisolated struct GitReferenceQueries: Sendable {
   private let shell: ShellClient
+  private let nativeLocal: Bool
 
-  public init(shell: ShellClient = .live) {
+  public init() {
+    self.shell = .live
+    self.nativeLocal = true
+  }
+
+  public init(shell: ShellClient, nativeLocal: Bool = false) {
     self.shell = shell
+    self.nativeLocal = nativeLocal
   }
 
   public func isBareRepository(for repoRoot: URL) async throws -> Bool {
+    if nativeLocal { return try await Task.detached { try NativeGitRepository.isBare(at: repoRoot) }.value }
     let output = try await runGit(
       arguments: [
         "-C",
@@ -61,6 +69,13 @@ public nonisolated struct GitReferenceQueries: Sendable {
   }
 
   public func branchRefs(for repoRoot: URL) async throws -> [String] {
+    if nativeLocal {
+      let branches = try await Task.detached { try NativeGitRepository.branches(at: repoRoot, remote: false) }.value
+      let refs = branches.map { $0.upstream ?? $0.name }
+        .filter { !$0.hasSuffix("/HEAD") }
+        .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+      return deduplicated(refs)
+    }
     let output = try await runGit(
       arguments: [
         "-C",
@@ -93,6 +108,14 @@ public nonisolated struct GitReferenceQueries: Sendable {
   /// from `GitClient.localBranchNames` (a lowercased `Set` for membership checks)
   /// so the ordered-list-vs-set contract isn't conflated at a call site.
   public func orderedLocalBranchNames(for repoRoot: URL) async throws -> [String] {
+    if nativeLocal {
+      // Name allocation and the base-ref picker only need names. Resolving every
+      // upstream snapshots the entire Git config per branch in libgit2, which
+      // becomes quadratic for repositories with thousands of tracked branches.
+      return try await Task.detached {
+        try NativeGitRepository.branches(at: repoRoot, remote: false, includeUpstream: false).map(\.name)
+      }.value
+    }
     let output = try await runGit(
       arguments: [
         "-C",
@@ -107,6 +130,12 @@ public nonisolated struct GitReferenceQueries: Sendable {
 
   /// Full remote-tracking refs (e.g. `origin/main`), excluding `*/HEAD`.
   public func remoteBranchRefs(for repoRoot: URL) async throws -> [String] {
+    if nativeLocal {
+      return try await Task.detached {
+        try NativeGitRepository.branches(at: repoRoot, remote: true, includeUpstream: false)
+          .map(\.name).filter { !$0.hasSuffix("/HEAD") }
+      }.value
+    }
     let output = try await runGit(
       arguments: [
         "-C",
@@ -120,6 +149,7 @@ public nonisolated struct GitReferenceQueries: Sendable {
   }
 
   public func remoteNames(for repoRoot: URL) async throws -> [String] {
+    if nativeLocal { return try await Task.detached { try NativeGitRepository.remoteNames(at: repoRoot) }.value }
     let output = try await runGit(
       arguments: [
         "-C",
@@ -181,6 +211,9 @@ public nonisolated struct GitReferenceQueries: Sendable {
   }
 
   public func defaultRemoteBranchRef(for repoRoot: URL) async throws -> String? {
+    if nativeLocal {
+      return try await Task.detached { try NativeGitRepository.defaultRemoteBranch(at: repoRoot) }.value
+    }
     do {
       let output = try await runGit(
         arguments: [
@@ -210,6 +243,11 @@ public nonisolated struct GitReferenceQueries: Sendable {
   }
 
   public func automaticWorktreeBaseRef(for repoRoot: URL) async -> String? {
+    if nativeLocal {
+      return try? await Task.detached {
+        try NativeGitRepository.defaultRemoteBranch(at: repoRoot) ?? NativeGitRepository.localHead(at: repoRoot)
+      }.value
+    }
     let remote = try? await defaultRemoteBranchRef(for: repoRoot)
     if let remote {
       return Self.preferredBaseRef(remote: remote, localHead: nil)

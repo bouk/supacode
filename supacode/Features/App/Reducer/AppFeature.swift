@@ -1331,7 +1331,12 @@ struct AppFeature {
       case .settings(.repositorySettings(.delegate(.settingsChanged(let rootURL, let host)))):
         // The edited repo's row context menu resolves its open action from the
         // reducer-cached map, so refresh it whichever repo was edited.
-        let refreshOpenActionMap = Effect<Action>.send(.repositories(.openActionSettingsChanged))
+        @Shared(.repositorySettings(rootURL, host: host)) var repositorySettings
+        let refreshOpenActionMap: Effect<Action> = .merge(
+          .send(.repositories(.openActionSettingsChanged)),
+          host == nil && repositorySettings.prewarmWorktree
+            ? .send(.repositories(.preparePrewarmedWorktree(rootURL))) : .none
+        )
         // Compare the settings keys, not the raw URLs: the key standardizes its root, so
         // two spellings of the same repository (a `/private` prefix, a trailing slash)
         // resolve the same open action while a raw `==` would skip the scripts reload.

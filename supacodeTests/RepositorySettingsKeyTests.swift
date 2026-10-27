@@ -9,6 +9,15 @@ import Testing
 @testable import supacode
 
 struct RepositorySettingsKeyTests {
+  @Test func prewarmWorktreeDefaultsToOffAndPersistsWhenEnabled() throws {
+    let legacy = try JSONDecoder().decode(RepositorySettings.self, from: Data("{}".utf8))
+    #expect(!legacy.prewarmWorktree)
+    var enabled = legacy
+    enabled.prewarmWorktree = true
+    let data = try JSONEncoder().encode(enabled)
+    let restored = try JSONDecoder().decode(RepositorySettings.self, from: data)
+    #expect(restored.prewarmWorktree)
+  }
   @Test func encodingOmitsNilWorktreeBaseRef() throws {
     let data = try JSONEncoder().encode(RepositorySettings.default)
     let json = String(bytes: data, encoding: .utf8) ?? ""

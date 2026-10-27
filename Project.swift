@@ -1,10 +1,14 @@
 import ProjectDescription
 
+let libgit2XCFrameworkPath: Path = ".build/libgit2/CLibgit2.xcframework"
+let libgit2BuildScriptPath: Path = "scripts/build-libgit2.sh"
 let ghosttyXCFrameworkPath: Path = ".build/ghostty/GhosttyKit.xcframework"
 let ghosttyResourcesPath: Path = ".build/ghostty/share/ghostty"
 let ghosttyTerminfoPath: Path = ".build/ghostty/share/terminfo"
 let ghosttyBuildScriptPath: Path = "scripts/build-ghostty.sh"
-let verifyGitWtScriptPath: Path = "scripts/verify-git-wt.sh"
+let nativeWtBuildScriptPath: Path = "scripts/build-native-wt.sh"
+let nativeWtBinaryPath: Path = ".build/native-wt/wt"
+let nativeWtCompatPath: Path = ".build/native-wt/wt-compat"
 let zmxBuildScriptPath: Path = "scripts/build-zmx.sh"
 let zmxBinaryPath: Path = ".build/zmx/bin/zmx"
 let embedGhosttyResourcesScriptPath: Path = "scripts/embed-ghostty-resources.sh"
@@ -22,6 +26,8 @@ let appResources: ResourceFileElements = [
   "supacode/AppIcon.icon",
   "supacode/Assets.xcassets",
   "supacode/notification.wav",
+  "ThirdParty/libgit2/COPYING",
+  "NativeWT/LICENSE.git-wt",
 ]
 
 let appBuildableFolders: [BuildableFolder] = [
@@ -147,7 +153,8 @@ let embedGhosttyResourcesOutputPaths: [Path] = [
 ]
 
 let embedRuntimeAssetsInputPaths: [FileListGlob] = [
-  "$(SRCROOT)/Resources/git-wt/wt",
+  "$(SRCROOT)/\(nativeWtBinaryPath.pathString)",
+  "$(SRCROOT)/\(nativeWtCompatPath.pathString)",
   "$(SRCROOT)/\(zmxBinaryPath.pathString)",
   "$(SRCROOT)/supacode/Resources/Themes/Supacode Light",
   "$(SRCROOT)/supacode/Resources/Themes/Supacode Dark",
@@ -157,6 +164,7 @@ let embedRuntimeAssetsInputPaths: [FileListGlob] = [
 
 let embedRuntimeAssetsOutputPaths: [Path] = [
   "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/git-wt/wt",
+  "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/git-wt/wt-compat",
   "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/zmx/zmx",
   "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/Supacode Light",
   "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/Supacode Dark",
@@ -167,9 +175,12 @@ let project = Project(
   name: "supacode",
   settings: .settings(
     base: [
+      "ARCHS": "arm64",
       "CLANG_ENABLE_MODULES": "YES",
       "CODE_SIGN_STYLE": "Automatic",
       "ENABLE_USER_SCRIPT_SANDBOXING": "NO",
+      "HEADER_SEARCH_PATHS": "$(inherited) $(BUILT_PRODUCTS_DIR)/CLibgit2.framework/Headers",
+      "OTHER_LDFLAGS": "$(inherited) -lz -liconv",
       "SWIFT_APPROACHABLE_CONCURRENCY": "YES",
       "SWIFT_DEFAULT_ACTOR_ISOLATION": "MainActor",
       "SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY": "YES",
@@ -220,6 +231,16 @@ let project = Project(
       ],
       output: .xcframework(path: ghosttyXCFrameworkPath, linking: .static)
     ),
+    .foreignBuild(
+      name: "CLibgit2",
+      destinations: .macOS,
+      script: shellScript(libgit2BuildScriptPath),
+      inputs: [
+        .file(libgit2BuildScriptPath),
+        .file("ThirdParty/libgit2/CMakeLists.txt"),
+      ],
+      output: .xcframework(path: libgit2XCFrameworkPath, linking: .static)
+    ),
     .target(
       name: "SupacodeSettingsShared",
       destinations: .macOS,
@@ -234,6 +255,7 @@ let project = Project(
         "SupacodeSettingsShared",
       ],
       dependencies: [
+        .target(name: "CLibgit2"),
         .external(name: "ComposableArchitecture"),
         .external(name: "Dependencies"),
         .external(name: "PostHog"),
@@ -280,8 +302,8 @@ let project = Project(
       buildableFolders: appBuildableFolders,
       scripts: [
         .pre(
-          script: shellScript(verifyGitWtScriptPath),
-          name: "Verify git-wt",
+          script: "SUPACODE_LIBGIT2_BUILT=1 " + shellScript(nativeWtBuildScriptPath),
+          name: "Build native wt",
           basedOnDependencyAnalysis: false
         ),
         .pre(

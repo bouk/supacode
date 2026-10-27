@@ -67,6 +67,7 @@ nonisolated struct GitClientDependency: Sendable {
       _ baseRef: String
     ) async throws
       -> Worktree
+  var preparePrewarmedWorktree: @Sendable (_ repoRoot: URL, _ baseRef: String) async throws -> Void
   var createWorktreeStream:
     @Sendable (
       _ name: String,
@@ -75,7 +76,8 @@ nonisolated struct GitClientDependency: Sendable {
       _ copyIgnored: Bool,
       _ copyUntracked: Bool,
       _ baseRef: String,
-      _ directoryOverride: URL?
+      _ directoryOverride: URL?,
+      _ prewarm: Bool
     ) -> AsyncThrowingStream<GitWorktreeCreateEvent, Error>
   var cloneStream:
     @Sendable (
@@ -111,7 +113,7 @@ nonisolated struct GitClientDependency: Sendable {
 }
 
 nonisolated extension GitClientDependency: DependencyKey {
-  static let liveValue = make(shell: .live)
+  static let liveValue = make(shell: .live, nativeLocal: true)
 
   /// Remote flavor: every `git` / `wt` shell-out runs on `host` over SSH.
   /// `isGitRepository` / `rootDirectoryExists` still probe the *local*
@@ -145,6 +147,7 @@ nonisolated extension GitClientDependency: DependencyKey {
   /// an unfiltered `wt` copy.
   nonisolated private static func resolveSupaignore(
     shell: ShellClient,
+    nativeLocal: Bool,
     repoRoot: URL,
     baseRef: String,
     globalFileURL: URL,
@@ -153,7 +156,7 @@ nonisolated extension GitClientDependency: DependencyKey {
     do {
       let global = try readSupaignoreFile(at: globalFileURL)
       let repoDefault = try readSupaignoreFile(at: repoDefaultFileURL)
-      let committed = try await GitClient(shell: shell).committedSupaignore(
+      let committed = try await GitClient(shell: shell, nativeReferences: nativeLocal).committedSupaignore(
         for: repoRoot, baseRef: baseRef)
       guard
         let merged = SupaignoreMerge.merged(
@@ -193,10 +196,10 @@ nonisolated extension GitClientDependency: DependencyKey {
   /// Discards a path's uncommitted changes: `git restore` for a tracked file, or
   /// unstage then move an untracked file to the Trash (recoverable).
   nonisolated private static func discardFile(
-    shell: ShellClient, path: String, root: URL, tracked: Bool
+    shell: ShellClient, path: String, root: URL, tracked: Bool, nativeReferences: Bool
   ) async throws {
     guard tracked else {
-      try await GitClient(shell: shell).unstageFile(path, in: root)
+      try await GitClient(shell: shell, nativeReferences: nativeReferences).unstageFile(path, in: root)
       let url = root.appending(path: path)
       try await Task.detached(priority: .userInitiated) {
         // A staged addition can already be gone from the worktree (`AD`); unstaging
@@ -206,35 +209,54 @@ nonisolated extension GitClientDependency: DependencyKey {
       }.value
       return
     }
-    try await GitClient(shell: shell).discardTrackedFile(path, in: root)
+    try await GitClient(shell: shell, nativeReferences: nativeReferences).discardTrackedFile(path, in: root)
   }
 
   /// Single source of truth for the dependency's closures, parameterized on the
   /// transport so the local and SSH flavors can't drift.
-  private static func make(shell: ShellClient) -> GitClientDependency {
+  static func make(shell: ShellClient, nativeLocal: Bool = false) -> GitClientDependency {
     GitClientDependency(
-      repoRoot: { try await GitClient(shell: shell).repoRoot(for: $0) },
+      repoRoot: { path in
+        if nativeLocal {
+          return try await Task.detached(priority: .userInitiated) {
+            try NativeGitRepository.root(at: GitClient.directoryURL(for: path))
+          }.value
+        }
+        return try await GitClient(shell: shell, nativeReferences: nativeLocal).repoRoot(for: path)
+      },
       isGitRepository: { Repository.isGitRepository(at: $0) },
       rootDirectoryExists: { Self.directoryExists(at: $0) },
-      checkGitEnvironment: { await GitClient(shell: shell).gitEnvironmentError() },
-      worktrees: { try await GitClient(shell: shell).worktrees(for: $0) },
-      registeredWorktrees: { try await GitClient(shell: shell).gitWorktrees(for: $0) },
-      reconcileSupacodeLocks: { await GitClient(shell: shell).reconcileSupacodeLocks(for: $0) },
-      localBranchNames: { try await GitClient(shell: shell).localBranchNames(for: $0) },
+      checkGitEnvironment: { await GitClient(shell: shell, nativeReferences: nativeLocal).gitEnvironmentError() },
+      worktrees: { try await GitClient(shell: shell, nativeReferences: nativeLocal).worktrees(for: $0) },
+      registeredWorktrees: { try await GitClient(shell: shell, nativeReferences: nativeLocal).gitWorktrees(for: $0) },
+      reconcileSupacodeLocks: {
+        await GitClient(shell: shell).reconcileSupacodeLocks(for: $0)
+      },
+      localBranchNames: { try await GitClient(shell: shell, nativeReferences: nativeLocal).localBranchNames(for: $0) },
       renameBranch: { oldName, newName, repoRoot in
-        try await GitClient(shell: shell).renameBranch(from: oldName, to: newName, for: repoRoot)
+        try await GitClient(shell: shell).renameBranch(
+          from: oldName, to: newName, for: repoRoot)
       },
       isValidBranchName: { branchName, repoRoot in
-        await GitClient(shell: shell).isValidBranchName(branchName, for: repoRoot)
+        await GitClient(shell: shell, nativeReferences: nativeLocal).isValidBranchName(branchName, for: repoRoot)
       },
-      branchInventory: { try await GitClient(shell: shell).branchInventory(for: $0, remoteNames: $1) },
-      defaultRemoteBranchRef: { try await GitClient(shell: shell).defaultRemoteBranchRef(for: $0) },
-      automaticWorktreeBaseRef: { await GitClient(shell: shell).automaticWorktreeBaseRef(for: $0) },
+      branchInventory: {
+        try await GitClient(shell: shell, nativeReferences: nativeLocal).branchInventory(for: $0, remoteNames: $1)
+      },
+      defaultRemoteBranchRef: {
+        try await GitClient(shell: shell, nativeReferences: nativeLocal).defaultRemoteBranchRef(for: $0)
+      },
+      automaticWorktreeBaseRef: {
+        await GitClient(shell: shell, nativeReferences: nativeLocal).automaticWorktreeBaseRef(for: $0)
+      },
       ignoredFileCount: { try await GitClient(shell: shell).ignoredFileCount(for: $0) },
-      untrackedFileCount: { try await GitClient(shell: shell).untrackedFileCount(for: $0) },
+      untrackedFileCount: {
+        try await GitClient(shell: shell).untrackedFileCount(for: $0)
+      },
       resolveSupaignore: { repoRoot, baseRef, globalFileURL, repoDefaultFileURL in
         await Self.resolveSupaignore(
           shell: shell,
+          nativeLocal: nativeLocal,
           repoRoot: repoRoot,
           baseRef: baseRef,
           globalFileURL: globalFileURL,
@@ -253,7 +275,7 @@ nonisolated extension GitClientDependency: DependencyKey {
         await Self.copyArtifacts(plan, from: source, to: destination)
       },
       createWorktree: { name, repoRoot, baseDirectory, copyIgnored, copyUntracked, baseRef in
-        try await GitClient(shell: shell).createWorktree(
+        try await GitClient(shell: shell, nativeReferences: nativeLocal).createWorktree(
           named: name,
           in: repoRoot,
           baseDirectory: baseDirectory,
@@ -261,18 +283,24 @@ nonisolated extension GitClientDependency: DependencyKey {
           baseRef: baseRef
         )
       },
-      createWorktreeStream: { name, repoRoot, baseDirectory, copyIgnored, copyUntracked, baseRef, directoryOverride in
-        GitClient(shell: shell).createWorktreeStream(
+      preparePrewarmedWorktree: { repoRoot, baseRef in
+        try await GitClient(shell: shell, nativeReferences: nativeLocal).preparePrewarmedWorktree(
+          for: repoRoot, baseRef: baseRef)
+      },
+      createWorktreeStream: {
+        name, repoRoot, baseDirectory, copyIgnored, copyUntracked, baseRef, directoryOverride, prewarm in
+        GitClient(shell: shell, nativeReferences: nativeLocal).createWorktreeStream(
           named: name,
           in: repoRoot,
           baseDirectory: baseDirectory,
           copyFiles: (ignored: copyIgnored, untracked: copyUntracked),
           baseRef: baseRef,
-          directoryOverride: directoryOverride
+          directoryOverride: directoryOverride,
+          prewarm: prewarm
         )
       },
       cloneStream: { repositoryURL, destination, branch, depth in
-        GitClient(shell: shell).cloneStream(
+        GitClient(shell: shell, nativeReferences: nativeLocal).cloneStream(
           repositoryURL: repositoryURL,
           into: destination,
           branch: branch,
@@ -282,33 +310,44 @@ nonisolated extension GitClientDependency: DependencyKey {
       deleteBranch: { try await GitClient(shell: shell).deleteBranch($0, ifAt: $1, for: $2) },
       resolveCommit: { await GitClient(shell: shell).resolveCommit($0, for: $1) },
       removeWorktree: { worktree, deleteBranch in
-        try await GitClient(shell: shell).removeWorktree(worktree, deleteBranch: deleteBranch)
+        try await GitClient(shell: shell).removeWorktree(
+          worktree, deleteBranch: deleteBranch)
       },
-      isBareRepository: { try await GitClient(shell: shell).isBareRepository(for: $0) },
-      branchName: { await GitClient(shell: shell).symbolicHeadBranch(at: $0) },
-      lineChanges: { await GitClient(shell: shell).lineChanges(at: $0) },
-      fileStatus: { await GitClient(shell: shell).fileStatus(at: $0) },
-      stageFile: { path, root in try await GitClient(shell: shell).stageFile(path, in: root) },
-      unstageFile: { path, root in try await GitClient(shell: shell).unstageFile(path, in: root) },
+      isBareRepository: { repoRoot in
+        try await GitClient(shell: shell, nativeReferences: nativeLocal).isBareRepository(for: repoRoot)
+      },
+      branchName: { await GitClient(shell: shell, nativeReferences: nativeLocal).symbolicHeadBranch(at: $0) },
+      lineChanges: { await GitClient(shell: shell, nativeReferences: nativeLocal).lineChanges(at: $0) },
+      fileStatus: { await GitClient(shell: shell, nativeReferences: nativeLocal).fileStatus(at: $0) },
+      stageFile: { path, root in
+        try await GitClient(shell: shell).stageFile(path, in: root)
+      },
+      unstageFile: { path, root in
+        try await GitClient(shell: shell).unstageFile(path, in: root)
+      },
       discardFile: { path, root, tracked in
-        try await Self.discardFile(shell: shell, path: path, root: root, tracked: tracked)
+        try await Self.discardFile(
+          shell: shell, path: path, root: root, tracked: tracked, nativeReferences: false)
       },
-      remoteNames: { try await GitClient(shell: shell).remoteNames(for: $0) },
-      fetchRemote: { remote, repoRoot in try await GitClient(shell: shell).fetchRemote(remote, for: repoRoot) },
+      remoteNames: { try await GitClient(shell: shell, nativeReferences: nativeLocal).remoteNames(for: $0) },
+      fetchRemote: { remote, repoRoot in
+        try await GitClient(shell: shell).fetchRemote(remote, for: repoRoot)
+      },
       remoteInfo: { repositoryRoot in
-        await GitClient(shell: shell).remoteInfo(for: repositoryRoot)
+        await GitClient(shell: shell, nativeReferences: nativeLocal).remoteInfo(for: repositoryRoot)
       },
       gitRemote: { repositoryRoot in
-        await GitClient(shell: shell).remote(for: repositoryRoot)
+        await GitClient(shell: shell, nativeReferences: nativeLocal).remote(for: repositoryRoot)
       },
       setUpstreamBranch: { branch, upstream, repoRoot in
-        try await GitClient(shell: shell).setUpstreamBranch(branch, to: upstream, for: repoRoot)
+        try await GitClient(shell: shell).setUpstreamBranch(
+          branch, to: upstream, for: repoRoot)
       },
       unsetUpstreamBranch: { branch, repoRoot in
         try await GitClient(shell: shell).unsetUpstreamBranch(branch, for: repoRoot)
       },
       upstreamBranchExists: { ref, repoRoot in
-        try await GitClient(shell: shell).upstreamBranchExists(ref, for: repoRoot)
+        try await GitClient(shell: shell, nativeReferences: nativeLocal).upstreamBranchExists(ref, for: repoRoot)
       }
     )
   }
@@ -328,6 +367,7 @@ nonisolated extension GitClientDependency: DependencyKey {
     // `git --version`; the license-gate tests override this explicitly.
     value.checkGitEnvironment = { nil }
     value.reconcileSupacodeLocks = { _ in }
+    value.preparePrewarmedWorktree = { _, _ in }
     // Default to "no supaignore" so unstubbed creation tests keep the
     // unfiltered `wt` copy path and never shell out; filter tests override it.
     value.resolveSupaignore = { _, _, _, _ in .absent }

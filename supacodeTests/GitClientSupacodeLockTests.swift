@@ -1,9 +1,41 @@
 import Foundation
 import Testing
 
+@testable import SupacodeSettingsShared
 @testable import supacode
 
 struct GitClientSupacodeLockTests {
+  @Test func liveClientRemovesWorktreeUsingGit() async throws {
+    let fixture = try await GitWorktreeFixture()
+    defer { fixture.cleanup() }
+    let directory = try await fixture.addLinkedWorktree(named: "live-remove")
+    let admin = fixture.adminDirectory(for: "live-remove")
+    GitClient.writeSupacodeLock(at: admin)
+    let worktree = Worktree(
+      id: WorktreeID(directory.path(percentEncoded: false)), kind: .git,
+      name: "live-remove", detail: "live-remove", workingDirectory: directory,
+      repositoryRootURL: fixture.workURL)
+    _ = try await GitClientDependency.liveValue.removeWorktree(worktree, true)
+    #expect(!FileManager.default.fileExists(atPath: admin.path(percentEncoded: false)))
+    let branches = try await GitClientDependency.liveValue.localBranchNames(fixture.workURL)
+    #expect(!branches.contains("live-remove"))
+  }
+
+  private static func nativeClient() -> GitClient {
+    GitClient(
+      shell: ShellClient(
+        run: { _, _, _ in
+          Issue.record("Native worktree operation launched a subprocess")
+          throw CocoaError(.fileReadUnknown)
+        },
+        runLoginImpl: { _, _, _, _ in
+          Issue.record("Native worktree operation launched a login shell")
+          throw CocoaError(.fileReadUnknown)
+        }
+      ),
+      nativeReferences: true
+    )
+  }
   @Test func reconcileBackfillsLockOnUnmanagedWorktree() async throws {
     let fixture = try await GitWorktreeFixture()
     defer { fixture.cleanup() }
@@ -12,7 +44,7 @@ struct GitClientSupacodeLockTests {
     let lockFile = adminDir.appending(path: "locked")
     #expect(!FileManager.default.fileExists(atPath: lockFile.path(percentEncoded: false)))
 
-    await GitClient().reconcileSupacodeLocks(for: fixture.workURL)
+    await Self.nativeClient().reconcileSupacodeLocks(for: fixture.workURL)
 
     let reason = try String(contentsOf: lockFile, encoding: .utf8)
     let metadata = GitClient.parseSupacodeLockMetadata(from: reason)
@@ -28,13 +60,23 @@ struct GitClientSupacodeLockTests {
     GitClient.writeSupacodeLock(at: adminDir)
     try FileManager.default.removeItem(at: worktreeURL)
 
-    await GitClient().reconcileSupacodeLocks(for: fixture.workURL)
+    await Self.nativeClient().reconcileSupacodeLocks(for: fixture.workURL)
 
     // The #338 fix: a transiently missing dir must NOT drop our lock.
     let lockFile = adminDir.appending(path: "locked")
     #expect(FileManager.default.fileExists(atPath: lockFile.path(percentEncoded: false)))
     let adminExists = FileManager.default.fileExists(atPath: adminDir.path(percentEncoded: false))
     #expect(adminExists)
+  }
+
+  @Test func reconcilePrunesMissingUnlockedWorktreeWithoutLaunchingGit() async throws {
+    let fixture = try await GitWorktreeFixture()
+    defer { fixture.cleanup() }
+    let worktree = try await fixture.addLinkedWorktree(named: "feature-missing-unlocked")
+    let admin = fixture.adminDirectory(for: "feature-missing-unlocked")
+    try FileManager.default.removeItem(at: worktree)
+    await Self.nativeClient().reconcileSupacodeLocks(for: fixture.workURL)
+    #expect(!FileManager.default.fileExists(atPath: admin.path(percentEncoded: false)))
   }
 
   @Test func reconcileLeavesUserLockUntouched() async throws {
@@ -45,7 +87,7 @@ struct GitClientSupacodeLockTests {
     let lockFile = adminDir.appending(path: "locked")
     try "user-set".write(to: lockFile, atomically: true, encoding: .utf8)
 
-    await GitClient().reconcileSupacodeLocks(for: fixture.workURL)
+    await Self.nativeClient().reconcileSupacodeLocks(for: fixture.workURL)
 
     let reason = try String(contentsOf: lockFile, encoding: .utf8)
     #expect(reason.trimmingCharacters(in: .whitespacesAndNewlines) == "user-set")
@@ -59,7 +101,7 @@ struct GitClientSupacodeLockTests {
     // Break the gitdir link: the worktree dir stays, its `.git` pointer is gone.
     try FileManager.default.removeItem(at: worktreeURL.appending(path: ".git"))
 
-    await GitClient().reconcileSupacodeLocks(for: fixture.workURL)
+    await Self.nativeClient().reconcileSupacodeLocks(for: fixture.workURL)
 
     // Never locked, so the trailing prune reclaims the orphan admin entry.
     #expect(!FileManager.default.fileExists(atPath: adminDir.path(percentEncoded: false)))
@@ -75,7 +117,7 @@ struct GitClientSupacodeLockTests {
     GitClient.writeSupacodeLock(at: adminDir)
     try FileManager.default.removeItem(at: worktreeURL.appending(path: ".git"))
 
-    await GitClient().reconcileSupacodeLocks(for: fixture.workURL)
+    await Self.nativeClient().reconcileSupacodeLocks(for: fixture.workURL)
 
     // The lock is released and the orphan admin entry is pruned.
     #expect(!FileManager.default.fileExists(atPath: adminDir.path(percentEncoded: false)))
@@ -90,7 +132,7 @@ struct GitClientSupacodeLockTests {
     try "user-set".write(to: lockFile, atomically: true, encoding: .utf8)
     try FileManager.default.removeItem(at: worktreeURL.appending(path: ".git"))
 
-    await GitClient().reconcileSupacodeLocks(for: fixture.workURL)
+    await Self.nativeClient().reconcileSupacodeLocks(for: fixture.workURL)
 
     // A user `git worktree lock --reason` is never dropped, so the entry survives.
     let reason = try String(contentsOf: lockFile, encoding: .utf8)
@@ -109,7 +151,7 @@ struct GitClientSupacodeLockTests {
     try FileManager.default.removeItem(at: gitPointer)
     try "garbage".write(to: gitPointer, atomically: true, encoding: .utf8)
 
-    await GitClient().reconcileSupacodeLocks(for: fixture.workURL)
+    await Self.nativeClient().reconcileSupacodeLocks(for: fixture.workURL)
 
     let lockFile = adminDir.appending(path: "locked")
     let reason = try String(contentsOf: lockFile, encoding: .utf8)
@@ -123,7 +165,7 @@ struct GitClientSupacodeLockTests {
     let adminDir = fixture.adminDirectory(for: "feature-relative")
     let lockFile = adminDir.appending(path: "locked")
 
-    await GitClient().reconcileSupacodeLocks(for: fixture.workURL)
+    await Self.nativeClient().reconcileSupacodeLocks(for: fixture.workURL)
 
     // Regression for git 2.48+ with `worktree.useRelativePaths`: the
     // admin gitdir is `../../../<worktree>/.git` and must resolve
@@ -143,7 +185,7 @@ struct GitClientSupacodeLockTests {
     // a directoryHint (RepositoriesFeature.swift). Mirror that exactly.
     let productionStyleRoot = URL(fileURLWithPath: fixture.workURL.path(percentEncoded: false))
 
-    await GitClient().reconcileSupacodeLocks(for: productionStyleRoot)
+    await Self.nativeClient().reconcileSupacodeLocks(for: productionStyleRoot)
 
     #expect(FileManager.default.fileExists(atPath: lockFile.path(percentEncoded: false)))
   }
@@ -163,7 +205,7 @@ struct GitClientSupacodeLockTests {
       repositoryRootURL: fixture.workURL
     )
 
-    _ = try await GitClient().removeWorktree(worktree, deleteBranch: false)
+    _ = try await Self.nativeClient().removeWorktree(worktree, deleteBranch: false)
 
     let adminExists = FileManager.default.fileExists(atPath: adminDir.path(percentEncoded: false))
     #expect(!adminExists)
@@ -186,7 +228,7 @@ struct GitClientSupacodeLockTests {
       isMissing: true
     )
 
-    _ = try await GitClient().removeWorktree(worktree, deleteBranch: false)
+    _ = try await Self.nativeClient().removeWorktree(worktree, deleteBranch: false)
 
     let adminExists = FileManager.default.fileExists(atPath: adminDir.path(percentEncoded: false))
     #expect(!adminExists)
@@ -209,7 +251,7 @@ struct GitClientSupacodeLockTests {
       isMissing: true
     )
 
-    _ = try await GitClient().removeWorktree(worktree, deleteBranch: true)
+    _ = try await Self.nativeClient().removeWorktree(worktree, deleteBranch: true)
 
     let adminExists = FileManager.default.fileExists(atPath: adminDir.path(percentEncoded: false))
     #expect(!adminExists)
@@ -266,6 +308,28 @@ struct GitClientSupacodeLockTests {
     #expect(branches.contains("main"))
     #expect(branches.contains("alias"))
     #expect(branches.contains("upper"))
+  }
+
+  @Test func nativeRemovalOnlyPrunesTheSelectedWorktree() async throws {
+    let fixture = try await GitWorktreeFixture()
+    defer { fixture.cleanup() }
+    let target = try await fixture.addLinkedWorktree(named: "feature-target")
+    let other = try await fixture.addLinkedWorktree(named: "feature-other")
+    try "target lock".write(
+      to: fixture.adminDirectory(for: "feature-target").appending(path: "locked"), atomically: true, encoding: .utf8)
+    let otherAdmin = fixture.adminDirectory(for: "feature-other")
+    try "user lock".write(to: otherAdmin.appending(path: "locked"), atomically: true, encoding: .utf8)
+    let worktree = Worktree(
+      id: WorktreeID(target.path(percentEncoded: false)), kind: .git,
+      name: "feature-target", detail: "feature-target", workingDirectory: target,
+      repositoryRootURL: fixture.workURL)
+    _ = try await Self.nativeClient().removeWorktree(worktree, deleteBranch: true)
+    #expect(!FileManager.default.fileExists(atPath: fixture.adminDirectory(for: "feature-target").path(percentEncoded: false)))
+    #expect(FileManager.default.fileExists(atPath: other.path(percentEncoded: false)))
+    #expect(FileManager.default.fileExists(atPath: otherAdmin.appending(path: "locked").path(percentEncoded: false)))
+    let branches = try await Self.nativeClient().localBranchNames(for: fixture.workURL)
+    #expect(!branches.contains("feature-target"))
+    #expect(branches.contains("feature-other"))
   }
 
   @Test func writeSupacodeLockProducesParseableMetadata() async throws {
@@ -339,7 +403,7 @@ struct GitClientSupacodeLockTests {
     let lockFile = adminDir.appending(path: "locked")
     #expect(!FileManager.default.fileExists(atPath: lockFile.path(percentEncoded: false)))
 
-    await GitClient().reconcileSupacodeLocks(for: bareURL)
+    await Self.nativeClient().reconcileSupacodeLocks(for: bareURL)
 
     let reason = try String(contentsOf: lockFile, encoding: .utf8)
     let metadata = GitClient.parseSupacodeLockMetadata(from: reason)

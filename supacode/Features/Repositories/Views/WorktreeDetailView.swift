@@ -993,7 +993,8 @@ struct WorktreeDetailView: View {
             statusTitle: progress?.titleText ?? selectedRow.name,
             statusDetail: progress?.detailText ?? (selectedRow.subtitle ?? ""),
             statusCommand: progress?.commandText,
-            statusLines: progress?.liveOutputLines ?? []
+            statusLines: progress?.liveOutputLines ?? [],
+            checkoutFraction: progress?.checkoutFraction
           )
         )
       )

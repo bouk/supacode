@@ -22,10 +22,8 @@ zmx_binary_path="${zmx_build_root}/bin/zmx"
 # Patches apply in lexical order and may stack on one another.
 zmx_patches_dir="${srcroot}/patches/zmx"
 
-# Mirror Xcode's ARCHS_STANDARD for macOS (arm64, x86_64); resync if Configurations/Project.xcconfig pins ARCHS.
-# Unconditional: every build emits both slices regardless of CONFIGURATION / ONLY_ACTIVE_ARCH.
+# The application and its bundled command-line tools target Apple Silicon.
 zmx_targets=(
-  "x86_64-macos"
   "aarch64-macos"
 )
 
@@ -203,15 +201,11 @@ for target in "${zmx_targets[@]}"; do
 done
 
 mkdir -p "$(dirname "${zmx_binary_path}")"
-lipo -create "${slice_paths[@]}" -output "${zmx_binary_path}"
+cp "${slice_paths[0]}" "${zmx_binary_path}"
 
-# Defense in depth: -verify_arch fails closed on a partial / thin lipo output, but exits silently.
-# One arch per call: Xcode 27's lipo rejects several.
-for arch in x86_64 arm64; do
-  if ! lipo "${zmx_binary_path}" -verify_arch "${arch}"; then
-    echo "error: zmx universal binary at ${zmx_binary_path} is missing the ${arch} slice" >&2
-    exit 1
-  fi
-done
+if ! lipo "${zmx_binary_path}" -verify_arch arm64; then
+  echo "error: zmx binary at ${zmx_binary_path} is missing arm64" >&2
+  exit 1
+fi
 
 printf '%s\n' "${fingerprint}" > "${zmx_fingerprint_path}"

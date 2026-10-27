@@ -1372,7 +1372,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.fetchRemote = { remote, _ in
         fetchedRemote.withValue { $0 = remote }
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -1635,7 +1635,7 @@ struct RepositoriesFeatureTests {
       $0.uuid = .incrementing
       $0.gitClient.isValidBranchName = { _, _ in true }
       $0.gitClient.localBranchNames = { _ in ["main", "experiments/a", "experiments/b"] }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         streamStarted.setValue(true)
         return AsyncThrowingStream { $0.finish() }
       }
@@ -1674,7 +1674,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.isValidBranchName = { _, _ in true }
       $0.gitClient.localBranchNames = { _ in ["main"] }
       $0.gitClient.worktreeTargetState = { _ in .occupied }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         streamStarted.setValue(true)
         return AsyncThrowingStream { $0.finish() }
       }
@@ -1720,7 +1720,7 @@ struct RepositoriesFeatureTests {
       $0.uuid = .incrementing
       $0.gitClient.isValidBranchName = { _, _ in true }
       $0.gitClient.localBranchNames = { _ in ["main"] }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         streamStarted.setValue(true)
         return AsyncThrowingStream { $0.finish() }
       }
@@ -1760,7 +1760,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.isBareRepository = { _ in false }
       $0.gitClient.automaticWorktreeBaseRef = { _ in "main" }
       $0.gitClient.worktrees = { _ in [mainWorktree] }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(
             .outputLine(ShellStreamLine(source: .stderr, text: "Preparing worktree (new branch 'feature')")))
@@ -1806,7 +1806,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.isBareRepository = { _ in false }
       $0.gitClient.automaticWorktreeBaseRef = { _ in "main" }
       $0.gitClient.worktrees = { _ in [mainWorktree] }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(existingWorktree))
           continuation.finish()
@@ -1844,7 +1844,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.isBareRepository = { _ in false }
       $0.gitClient.automaticWorktreeBaseRef = { _ in "main" }
       $0.gitClient.worktrees = { _ in [mainWorktree] }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(elsewhere))
           continuation.finish()
@@ -1890,7 +1890,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.isBareRepository = { _ in false }
       $0.gitClient.automaticWorktreeBaseRef = { _ in "main" }
       $0.gitClient.worktrees = { _ in [mainWorktree] }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         streamStarted.setValue(true)
         return AsyncThrowingStream { $0.finish() }
       }
@@ -1933,7 +1933,7 @@ struct RepositoriesFeatureTests {
         probedTargets.withValue { $0.append(url) }
         return .absent
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { $0.finish(throwing: GitClientError.commandFailed(command: "wt sw", message: "boom")) }
       }
     }
@@ -1976,7 +1976,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.localBranchNames = { _ in ["main"] }
       $0.gitClient.isBareRepository = { _ in false }
       $0.gitClient.automaticWorktreeBaseRef = { _ in "main" }
-      $0.gitClient.createWorktreeStream = { name, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { name, _, _, _, _, _, _, _ in
         streamedName.setValue(name)
         return AsyncThrowingStream { $0.finish() }
       }
@@ -2008,7 +2008,7 @@ struct RepositoriesFeatureTests {
       $0.uuid = .incrementing
       $0.gitClient.isValidBranchName = { _, _ in true }
       $0.gitClient.localBranchNames = { _ in ["main", "other"] }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         streamStarted.setValue(true)
         return AsyncThrowingStream { $0.finish() }
       }
@@ -2053,7 +2053,7 @@ struct RepositoriesFeatureTests {
         }
         return isFirst ? .occupied : .absent
       }
-      $0.gitClient.createWorktreeStream = { name, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { name, _, _, _, _, _, _, _ in
         streamedName.setValue(name)
         return AsyncThrowingStream { $0.finish() }
       }
@@ -2091,7 +2091,7 @@ struct RepositoriesFeatureTests {
       $0.analyticsClient.capture = { _, _ in }
       $0.gitClient.isValidBranchName = { _, _ in true }
       $0.gitClient.localBranchNames = { _ in ["main"] }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         streamStarted.setValue(true)
         return AsyncThrowingStream { $0.finish() }
       }
@@ -2165,7 +2165,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.isBareRepository = { _ in false }
       $0.gitClient.automaticWorktreeBaseRef = { _ in "main" }
       $0.gitClient.worktrees = { _ in [mainWorktree] }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { $0.finish(throwing: GitClientError.commandFailed(command: "wt sw", message: "boom")) }
       }
       $0[LicenseClient.self].claimCreationResource = { _, _, directory in claimedDirectory.setValue(directory) }
@@ -2626,8 +2626,9 @@ struct RepositoriesFeatureTests {
       $0.gitClient.automaticWorktreeBaseRef = { _ in "origin/main" }
       $0.gitClient.ignoredFileCount = { _ in 2 }
       $0.gitClient.untrackedFileCount = { _ in 1 }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
+          continuation.yield(.checkoutProgress(completed: 3, total: 8))
           continuation.yield(.outputLine(ShellStreamLine(source: .stderr, text: "[1/2] copy .env")))
           continuation.yield(.outputLine(ShellStreamLine(source: .stderr, text: "[2/2] copy .cache")))
           continuation.yield(.finished(createdWorktree))
@@ -2639,6 +2640,10 @@ struct RepositoriesFeatureTests {
     store.exhaustivity = .off
 
     await store.send(.createRandomWorktreeInRepository(repository.id))
+    await store.receive {
+      guard case .pendingWorktreeProgressUpdated(_, let progress) = $0 else { return false }
+      return progress.checkoutCompleted == 3 && progress.checkoutTotal == 8
+    }
     await store.receive(\.createRandomWorktreeSucceeded)
     await store.receive(\.sidebarItems) {
       $0.sidebarItems[id: createdWorktree.id]?.shouldFocusTerminal = true
@@ -2694,7 +2699,7 @@ struct RepositoriesFeatureTests {
         copiedPlan.withValue { $0 = copiedPlanValue }
         return WorktreeArtifactCopier.Outcome(copied: 1, failed: 0, firstErrorDescription: nil)
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, copyIgnored, copyUntracked, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, copyIgnored, copyUntracked, _, _, _ in
         wtFlags.withValue { $0 = (copyIgnored, copyUntracked) }
         return AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
@@ -2745,7 +2750,7 @@ struct RepositoriesFeatureTests {
         copyCalled.withValue { $0 = true }
         return WorktreeArtifactCopier.Outcome(copied: 0, failed: 0, firstErrorDescription: nil)
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, copyIgnored, copyUntracked, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, copyIgnored, copyUntracked, _, _, _ in
         wtFlags.withValue { $0 = (copyIgnored, copyUntracked) }
         return AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
@@ -2790,7 +2795,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.copyWorktreeArtifacts = { _, _, _ in
         WorktreeArtifactCopier.Outcome(copied: 0, failed: 2, firstErrorDescription: "boom")
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -2837,7 +2842,7 @@ struct RepositoriesFeatureTests {
         copyCalled.withValue { $0 = true }
         return WorktreeArtifactCopier.Outcome(copied: 0, failed: 0, firstErrorDescription: nil)
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, copyIgnored, copyUntracked, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, copyIgnored, copyUntracked, _, _, _ in
         wtFlags.withValue { $0 = (copyIgnored, copyUntracked) }
         return AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
@@ -2893,7 +2898,7 @@ struct RepositoriesFeatureTests {
         copyCalled.withValue { $0 = true }
         return WorktreeArtifactCopier.Outcome(copied: 0, failed: 0, firstErrorDescription: nil)
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, copyIgnored, copyUntracked, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, copyIgnored, copyUntracked, _, _, _ in
         wtFlags.withValue { $0 = (copyIgnored, copyUntracked) }
         return AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
@@ -2949,7 +2954,7 @@ struct RepositoriesFeatureTests {
         copyCalled.withValue { $0 = true }
         return WorktreeArtifactCopier.Outcome(copied: 0, failed: 0, firstErrorDescription: nil)
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, copyIgnored, copyUntracked, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, copyIgnored, copyUntracked, _, _, _ in
         wtFlags.withValue { $0 = (copyIgnored, copyUntracked) }
         return AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
@@ -2998,7 +3003,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.copyWorktreeArtifacts = { _, _, _ in
         WorktreeArtifactCopier.Outcome(copied: 0, failed: 1, firstErrorDescription: "copyboom")
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -3041,7 +3046,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.automaticWorktreeBaseRef = { _ in "origin/main" }
       $0.gitClient.upstreamBranchExists = { _, _ in true }
       $0.gitClient.setUpstreamBranch = { _, _, _ in throw UpstreamError() }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -3089,7 +3094,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.fetchRemote = { remote, _ in
         fetchedRemote.withValue { $0 = remote }
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -3134,7 +3139,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.fetchRemote = { _, _ in
         fetchCalled.withValue { $0 = true }
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -3178,7 +3183,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.fetchRemote = { _, _ in
         throw GitClientError.commandFailed(command: "git fetch", message: "network error")
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -3225,7 +3230,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.fetchRemote = { _, _ in
         fetchCalled.withValue { $0 = true }
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -3272,7 +3277,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.fetchRemote = { remote, _ in
         fetchedRemote.withValue { $0 = remote }
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -3319,7 +3324,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.fetchRemote = { _, _ in
         fetchCalled.withValue { $0 = true }
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -3365,7 +3370,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.automaticWorktreeBaseRef = { _ in "origin/main" }
       $0.gitClient.ignoredFileCount = { _ in 0 }
       $0.gitClient.untrackedFileCount = { _ in 0 }
-      $0.gitClient.createWorktreeStream = { _, _, baseDirectory, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, baseDirectory, _, _, _, _, _ in
         observedBaseDirectory.withValue { $0 = baseDirectory }
         return AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
@@ -3411,7 +3416,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.automaticWorktreeBaseRef = { _ in "origin/main" }
       $0.gitClient.ignoredFileCount = { _ in 0 }
       $0.gitClient.untrackedFileCount = { _ in 0 }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, directoryOverride in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, directoryOverride, _ in
         observedDirectoryOverride.withValue { $0 = directoryOverride }
         return AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
@@ -3479,7 +3484,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.automaticWorktreeBaseRef = { _ in "origin/main" }
       $0.gitClient.ignoredFileCount = { _ in 0 }
       $0.gitClient.untrackedFileCount = { _ in 0 }
-      $0.gitClient.createWorktreeStream = { _, _, baseDirectory, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, baseDirectory, _, _, _, _, _ in
         observedBaseDirectory.withValue { $0 = baseDirectory }
         return AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
@@ -3517,7 +3522,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.automaticWorktreeBaseRef = { _ in "origin/main" }
       $0.gitClient.ignoredFileCount = { _ in 2 }
       $0.gitClient.untrackedFileCount = { _ in 1 }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.outputLine(ShellStreamLine(source: .stderr, text: "[1/2] copy .env")))
           continuation.finish(throwing: GitClientError.commandFailed(command: "wt sw", message: "boom"))
@@ -3616,6 +3621,99 @@ struct RepositoriesFeatureTests {
     )
   }
 
+  @Test(.dependencies) func enabledPrewarmingIsUsedAndReplenishedAfterCreation() async {
+    let root = "/tmp/prewarm-create-feature-test"
+    let main = makeWorktree(id: root, name: "main", repoRoot: root)
+    let repository = makeRepository(id: root, worktrees: [main])
+    let created = makeWorktree(id: "\(root)/new", name: "new", repoRoot: root)
+    let usedPrewarm = LockIsolated(false)
+    let preparations = LockIsolated(0)
+    @Shared(.repositorySettings(repository.rootURL)) var repositorySettings
+    $repositorySettings.withLock { $0.prewarmWorktree = true }
+    @Shared(.settingsFile) var settings
+    $settings.withLock { $0.global.promptForWorktreeCreation = false }
+    let store = TestStore(initialState: makeState(repositories: [repository])) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.gitClient.localBranchNames = { _ in [] }
+      $0.gitClient.isBareRepository = { _ in false }
+      $0.gitClient.automaticWorktreeBaseRef = { _ in "main" }
+      $0.gitClient.ignoredFileCount = { _ in 0 }
+      $0.gitClient.untrackedFileCount = { _ in 0 }
+      $0.gitClient.preparePrewarmedWorktree = { _, _ in preparations.withValue { $0 += 1 } }
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, prewarm in
+        usedPrewarm.setValue(prewarm)
+        return AsyncThrowingStream { continuation in
+          continuation.yield(.finished(created))
+          continuation.finish()
+        }
+      }
+      $0.gitClient.worktrees = { _ in [created, main] }
+    }
+    store.exhaustivity = .off
+    await store.send(.createRandomWorktreeInRepository(repository.id))
+    await store.receive(\.createRandomWorktreeSucceeded)
+    await store.finish()
+    #expect(usedPrewarm.value)
+    #expect(preparations.value >= 1)
+  }
+
+  @Test(.dependencies) func failedPrewarmedCreationDoesNotDeleteCheckout() async {
+    let root = "/tmp/prewarm-failed-feature-test"
+    let main = makeWorktree(id: root, name: "main", repoRoot: root)
+    let repository = makeRepository(id: root, worktrees: [main])
+    let removed = LockIsolated(false)
+    @Shared(.repositorySettings(repository.rootURL)) var repositorySettings
+    $repositorySettings.withLock { $0.prewarmWorktree = true }
+    @Shared(.settingsFile) var settings
+    $settings.withLock { $0.global.promptForWorktreeCreation = false }
+    let store = TestStore(initialState: makeState(repositories: [repository])) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.gitClient.localBranchNames = { _ in [] }
+      $0.gitClient.isBareRepository = { _ in false }
+      $0.gitClient.automaticWorktreeBaseRef = { _ in "main" }
+      $0.gitClient.ignoredFileCount = { _ in 0 }
+      $0.gitClient.untrackedFileCount = { _ in 0 }
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
+        AsyncThrowingStream { $0.finish(throwing: GitClientError.commandFailed(command: "wt", message: "hook failed")) }
+      }
+      $0.gitClient.removeWorktree = { worktree, _ in
+        removed.setValue(true)
+        return worktree.workingDirectory
+      }
+    }
+    store.exhaustivity = .off
+    await store.send(.createRandomWorktreeInRepository(repository.id))
+    await store.receive(\.createRandomWorktreeFailed)
+    await store.finish()
+    #expect(!removed.value)
+  }
+
+  @Test(.dependencies) func prewarmingUsesRepositorySettingAndConfiguredBase() async {
+    let root = URL(fileURLWithPath: "/tmp/prewarm-feature-test")
+    let calls = LockIsolated<[String]>([])
+    @Shared(.repositorySettings(root)) var settings
+    $settings.withLock {
+      $0.prewarmWorktree = true
+      $0.worktreeBaseRef = "origin/main"
+    }
+    let store = TestStore(initialState: RepositoriesFeature.State()) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.gitClient.preparePrewarmedWorktree = { _, base in calls.withValue { $0.append(base) } }
+    }
+    await store.send(.preparePrewarmedWorktree(root))
+    await store.finish()
+    #expect(calls.value == ["origin/main"])
+    $settings.withLock { $0.prewarmWorktree = false }
+    await store.send(.preparePrewarmedWorktree(root))
+    await store.finish()
+    #expect(calls.value == ["origin/main"])
+  }
+
   @Test func pendingProgressUpdateUpdatesPendingWorktreeState() async {
     let repoRoot = "/tmp/repo"
     let repository = makeRepository(
@@ -3642,8 +3740,11 @@ struct RepositoriesFeatureTests {
       worktreeName: "swift-otter",
       baseRef: "origin/main",
       copyIgnored: false,
-      copyUntracked: true
+      copyUntracked: true,
+      checkoutCompleted: 3,
+      checkoutTotal: 8
     )
+    #expect(nextProgress.checkoutFraction == 0.375)
     await store.send(
       .pendingWorktreeProgressUpdated(
         id: pendingID,
@@ -4159,7 +4260,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.automaticWorktreeBaseRef = { _ in "origin/main" }
       $0.gitClient.ignoredFileCount = { _ in 0 }
       $0.gitClient.untrackedFileCount = { _ in 0 }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -4206,7 +4307,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.automaticWorktreeBaseRef = { _ in "origin/main" }
       $0.gitClient.ignoredFileCount = { _ in 0 }
       $0.gitClient.untrackedFileCount = { _ in 0 }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -4329,7 +4430,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.isBareRepository = { _ in false }
       $0.gitClient.ignoredFileCount = { _ in 0 }
       $0.gitClient.untrackedFileCount = { _ in 0 }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -4387,7 +4488,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.setUpstreamBranch = { _, upstream, _ in
         observedUpstream.setValue(upstream)
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -4435,7 +4536,7 @@ struct RepositoriesFeatureTests {
       $0.gitClient.unsetUpstreamBranch = { branch, _ in
         observedUnset.setValue(branch)
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -12370,7 +12471,7 @@ struct RepositoriesFeatureTests {
     let store = TestStore(initialState: state) {
       RepositoriesFeature()
     } withDependencies: {
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           Issue.record("createWorktreeStream must not run for folder repositories")
           continuation.finish()

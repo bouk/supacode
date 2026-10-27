@@ -498,7 +498,7 @@ extension RepositoriesFeature.Action {
 
     // Pure effect launcher: spawns the async SSH resolution, mutates no state.
     // The per-repo `.remoteRepositoryResolved` results recompute the caches.
-    case .resolveRemoteRepositories:
+    case .resolveRemoteRepositories, .preparePrewarmedWorktree:
       return []
 
     // Pure trampoline that defers the teardown to `archiveWorktreeCommit`

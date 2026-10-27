@@ -143,7 +143,7 @@ struct WorktreeCreationPromptParentTests {
       $0.gitClient.setUpstreamBranch = { branch, upstream, root in
         observedSetUpstream.setValue(SetUpstreamInvocation(branch: branch, upstream: upstream, root: root))
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -207,7 +207,7 @@ struct WorktreeCreationPromptParentTests {
       $0.gitClient.setUpstreamBranch = { _, _, _ in
         throw GitClientError.commandFailed(command: "git branch --set-upstream-to", message: "boom")
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           continuation.yield(.finished(createdWorktree))
           continuation.finish()
@@ -264,7 +264,7 @@ struct WorktreeCreationPromptParentTests {
         removeWorktreeCalled.setValue(true)
         return worktree.workingDirectory
       }
-      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _, _ in
         streamStarted.setValue(true)
         return AsyncThrowingStream { $0.finish() }
       }

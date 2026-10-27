@@ -1,4 +1,5 @@
 import Foundation
+import SupacodeSettingsShared
 
 /// Uncommitted git state of a single path, split into git's two independent
 /// axes: `index` (staged vs HEAD) and `worktree` (unstaged vs index). A file is
@@ -171,6 +172,33 @@ nonisolated extension GitChangeKind {
 }
 
 nonisolated extension GitStatusSnapshot {
+  nonisolated static func fromNative(_ entries: [NativeGitRepository.StatusEntry]) -> GitStatusSnapshot {
+    var statuses: [String: GitFileStatus] = [:]
+    var ignored: Set<String> = []
+    for entry in entries {
+      let path = entry.path.hasSuffix("/") ? String(entry.path.dropLast()) : entry.path
+      if entry.ignored {
+        ignored.insert(path)
+        continue
+      }
+      var status = statuses[path] ?? GitFileStatus()
+      func convert(_ change: NativeGitRepository.Change?) -> GitChangeKind? {
+        switch change {
+        case .added: .added
+        case .modified: .modified
+        case .deleted: .deleted
+        case nil: nil
+        }
+      }
+      status.index = convert(entry.index) ?? status.index
+      status.worktree = convert(entry.worktree) ?? status.worktree
+      status.isUntracked = status.isUntracked || entry.untracked
+      status.isConflicted = status.isConflicted || entry.conflicted
+      statuses[path] = status
+    }
+    return GitStatusSnapshot(statuses: statuses, ignoredPrefixes: ignored)
+  }
+
   /// Parses `git status --porcelain=v2 -z` output into a snapshot. A `2`
   /// (rename) record spans a second NUL token for its original path, so the
   /// loop advances past it rather than treating it as a fresh record.

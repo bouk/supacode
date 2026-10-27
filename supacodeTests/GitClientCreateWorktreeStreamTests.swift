@@ -58,6 +58,34 @@ struct GitClientCreateWorktreeStreamTests {
     #expect(snapshot.arguments.contains("swift-otter"))
   }
 
+  @Test func prewarmingIsOptInAndPreparationUsesNativeTool() async throws {
+    let recorder = GitShellInvocationRecorder()
+    let shell = ShellClient(
+      run: { _, _, _ in ShellOutput(stdout: "", stderr: "", exitCode: 0) },
+      runLoginImpl: { executable, arguments, directory, _ in
+        recorder.record(executableURL: executable, arguments: arguments, currentDirectoryURL: directory)
+        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
+      },
+      runLoginStreamImpl: { executable, arguments, directory, _ in
+        recorder.record(executableURL: executable, arguments: arguments, currentDirectoryURL: directory)
+        return AsyncThrowingStream { continuation in
+          continuation.yield(.finished(ShellOutput(stdout: "/tmp/repo/new-wt", stderr: "", exitCode: 0)))
+          continuation.finish()
+        }
+      }
+    )
+    let client = GitClient(shell: shell)
+    let root = URL(fileURLWithPath: "/tmp/repo")
+    try await client.preparePrewarmedWorktree(for: root, baseRef: "origin/main")
+    #expect(recorder.snapshot().arguments.contains("__prewarm"))
+    #expect(recorder.snapshot().arguments.contains("origin/main"))
+    for try await _ in client.createWorktreeStream(
+      named: "new-wt", in: root, baseDirectory: root, copyFiles: (false, false),
+      baseRef: "main", prewarm: true
+    ) {}
+    #expect(recorder.snapshot().arguments.contains("SUPACODE_USE_PREWARM=1"))
+  }
+
   @Test func createWorktreeStreamForwardsDirectoryOverrideAsPathFlag() async throws {
     let recorder = GitShellInvocationRecorder()
     let shell = ShellClient(
@@ -107,6 +135,34 @@ struct GitClientCreateWorktreeStreamTests {
     #expect(snapshot.arguments.contains("feature/foo"))
   }
 
+  @Test func createWorktreeStreamReportsNativeCheckoutProgress() async throws {
+    let shell = ShellClient(
+      run: { _, _, _ in ShellOutput(stdout: "", stderr: "", exitCode: 0) },
+      runLoginImpl: { _, _, _, _ in ShellOutput(stdout: "", stderr: "", exitCode: 0) },
+      runLoginStreamImpl: { _, _, _, _ in
+        AsyncThrowingStream { continuation in
+          continuation.yield(.line(ShellStreamLine(source: .stderr, text: "SUPACODE_CHECKOUT_PROGRESS 3 8")))
+          continuation.yield(.line(ShellStreamLine(source: .stdout, text: "/tmp/repo/new-wt")))
+          continuation.yield(.finished(ShellOutput(stdout: "/tmp/repo/new-wt", stderr: "", exitCode: 0)))
+          continuation.finish()
+        }
+      }
+    )
+    let client = GitClient(shell: shell)
+    var progress: [(Int, Int)] = []
+    for try await event in client.createWorktreeStream(
+      named: "new-wt", in: URL(fileURLWithPath: "/tmp/repo"),
+      baseDirectory: URL(fileURLWithPath: "/tmp/repo/.worktrees"),
+      copyFiles: (ignored: false, untracked: false), baseRef: "main"
+    ) {
+      if case .checkoutProgress(let completed, let total) = event { progress.append((completed, total)) }
+    }
+    #expect(progress.count == 1)
+    #expect(progress.first?.0 == 3)
+    #expect(progress.first?.1 == 8)
+    #expect(GitClient.checkoutProgress(from: "SUPACODE_CHECKOUT_PROGRESS 9 8") == nil)
+  }
+
   @Test func createWorktreeStreamForwardsOutputLines() async throws {
     let shell = ShellClient(
       run: { _, _, _ in ShellOutput(stdout: "", stderr: "", exitCode: 0) },
@@ -139,6 +195,8 @@ struct GitClientCreateWorktreeStreamTests {
       baseRef: ""
     ) {
       switch event {
+      case .checkoutProgress:
+        break
       case .outputLine(let line):
         outputLines.append(line)
       case .finished(let worktree):
@@ -215,6 +273,8 @@ struct GitClientCreateWorktreeStreamTests {
       baseRef: ""
     ) {
       switch event {
+      case .checkoutProgress:
+        break
       case .outputLine(let line):
         outputLines.append(line)
       case .finished(let worktree):

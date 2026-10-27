@@ -1,0 +1,12 @@
+diff --git a/src/build/GhosttyXCFramework.zig b/src/build/GhosttyXCFramework.zig
+--- a/src/build/GhosttyXCFramework.zig
++++ b/src/build/GhosttyXCFramework.zig
+@@ -21,7 +21,7 @@
+     // Native macOS build
+     const macos_native = try GhosttyLib.initStatic(b, &try deps.retarget(
+         b,
+-        Config.genericMacOSTarget(b, null),
++        Config.genericMacOSTarget(b, .aarch64),
+     ));
+ 
+     // Generate a headers directory with only ghostty.h and the module

@@ -398,6 +398,7 @@ struct RepositoriesFeature {
     case refreshWorktrees
     case reloadRepositories(animated: Bool)
     case repositoriesLoaded([Repository], failures: [LoadFailure], roots: [URL], animated: Bool)
+    case preparePrewarmedWorktree(URL)
     /// Sole owner of `state.gitEnvironmentError`. Emitted by every load path with
     /// the current git-environment probe result (`nil` clears the banner).
     case gitEnvironmentChanged(GitEnvironmentError?)
@@ -2033,6 +2034,7 @@ struct RepositoriesFeature {
           repositoryOverridePath: repositorySettings.worktreeBaseDirectoryPath
         )
         let selectedBaseRef = repositorySettings.worktreeBaseRef
+        let prewarmEnabled = repositorySettings.prewarmWorktree
         let globalSettings = settingsFile.global
         let copyIgnoredOnWorktreeCreate =
           repositorySettings.copyIgnoredOnWorktreeCreate ?? globalSettings.copyIgnoredOnWorktreeCreate
@@ -2463,10 +2465,15 @@ struct RepositoriesFeature {
               wtCopyIgnored,
               wtCopyUntracked,
               resolvedBaseRef,
-              worktreeDirectoryURL
+              worktreeDirectoryURL,
+              prewarmEnabled
             )
             for try await event in stream {
               switch event {
+              case .checkoutProgress(let completed, let total):
+                progress.checkoutCompleted = completed
+                progress.checkoutTotal = total
+                await send(.pendingWorktreeProgressUpdated(id: pendingID, progress: progress))
               case .outputLine(let outputLine):
                 if outputLine.source == .stderr, cleanupTarget?.isWorktreeAddAnnouncement(outputLine.text) == true {
                   cleanupTarget?.startedWorktreeAdd = true
@@ -2485,6 +2492,7 @@ struct RepositoriesFeature {
                   )
                 }
               case .finished(let newWorktree):
+                if prewarmEnabled { await send(.preparePrewarmedWorktree(repository.rootURL)) }
                 // Perform the supaignore-filtered copy now that `wt` created the
                 // worktree. A copy (or earlier plan) failure is non-fatal (the
                 // worktree exists), so it surfaces as an alert, never a failed
@@ -3842,6 +3850,8 @@ struct RepositoriesFeature {
         state.isRefreshingWorktrees = false
         let previousSelection = state.selectedWorktreeID
         let previousSelectedWorktree = state.worktree(for: previousSelection)
+        let previousRepositoryIDs = Set(state.repositories.ids)
+        let isInitialLoad = !state.isInitialLoadComplete
         let mergedRemote = Self.mergePersistedRemoteRepositories(into: repositories, existingState: state)
         let mergedRepositories = mergedRemote.repositories
         let incomingRepositories = IdentifiedArray(uniqueElements: mergedRepositories)
@@ -3874,6 +3884,13 @@ struct RepositoriesFeature {
           selectedWorktree: selectedWorktree,
         )
         var allEffects: [Effect<Action>] = []
+        for repository in mergedRepositories
+        where repository.host == nil && repository.isGitRepository
+          && (isInitialLoad || !previousRepositoryIDs.contains(repository.id))
+        {
+          @Shared(.repositorySettings(repository.rootURL, host: nil)) var settings
+          if settings.prewarmWorktree { allEffects.append(.send(.preparePrewarmedWorktree(repository.rootURL))) }
+        }
         if repositoriesChanged {
           allEffects.append(.send(.delegate(.repositoriesChanged(state.repositories))))
         }
@@ -3892,6 +3909,23 @@ struct RepositoriesFeature {
           allEffects.append(.send(.resolveRemoteRepositories))
         }
         return .merge(allEffects)
+
+      case .preparePrewarmedWorktree(let root):
+        @Shared(.repositorySettings(root, host: nil)) var settings
+        guard settings.prewarmWorktree else { return .none }
+        let selected = settings.worktreeBaseRef
+        return .run { _ in
+          let base: String
+          if let selected, !selected.isEmpty {
+            base = selected
+          } else {
+            base = await gitClient.automaticWorktreeBaseRef(root) ?? ""
+          }
+          do { try await gitClient.preparePrewarmedWorktree(root, base) } catch {
+            repositoriesLogger.warning(
+              "Prewarm failed for \(root.path(percentEncoded: false)): \(error.localizedDescription)")
+          }
+        }
 
       case .resolveRemoteRepositories:
         let roots = Self.persistedRemoteRepositoryRoots()
