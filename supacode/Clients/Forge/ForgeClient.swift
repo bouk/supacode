@@ -63,7 +63,7 @@ nonisolated extension ForgePullRequest {
   /// Detail-tier enrichment: replaces only the detail fields. `state`,
   /// `mergedAt`, and identity always come from the summary tier.
   nonisolated func applying(_ detail: ForgePullRequestDetail) -> ForgePullRequest {
-    ForgePullRequest(
+    var result = ForgePullRequest(
       number: number,
       title: title,
       state: state,
@@ -86,6 +86,8 @@ nonisolated extension ForgePullRequest {
       fallbackReviewDecision: fallbackReviewDecision,
       numberSigil: numberSigil
     )
+    result.mergeAutomation = mergeAutomation
+    return result
   }
 }
 
@@ -100,7 +102,7 @@ nonisolated enum ForgeClientError: LocalizedError, Equatable {
   }
 }
 
-/// Forge-neutral seam over a forge CLI. Adapters own their transport strategy
+/// Forge-neutral operations. Adapters own their transport strategy
 /// (batching, retries, per-branch call plans); every endpoint here is a domain
 /// operation, never a specific CLI invocation.
 struct ForgeClient: Sendable {
@@ -112,7 +114,9 @@ struct ForgeClient: Sendable {
   /// Detail tier: enrich the selected worktree's proposal. Adapters whose
   /// summaries are already rich return nil.
   var fetchDetail: @MainActor @Sendable (ForgeProjectRef, Int) async throws -> ForgePullRequestDetail?
-  var mergePullRequest: @MainActor @Sendable (URL, ForgeProjectRef?, Int, PullRequestMergeStrategy) async throws -> Void
+  var mergePullRequest:
+    @MainActor @Sendable (URL, ForgeProjectRef?, Int, PullRequestMergeStrategy, PullRequestMergeAction) async throws ->
+      PullRequestMergeOutcome
   var closePullRequest: @MainActor @Sendable (URL, ForgeProjectRef?, Int) async throws -> Void
   var markPullRequestReady: @MainActor @Sendable (URL, ForgeProjectRef?, Int) async throws -> Void
   /// The proposal's unified diff, as the forge renders it.
@@ -125,15 +129,15 @@ struct ForgeClient: Sendable {
 }
 
 extension ForgeClient {
-  /// GitHub adapter: dispatches to the gh-backed client resolved at call time,
+  /// GitHub adapter: dispatches to the native API client resolved at call time,
   /// so dependency overrides in tests keep applying.
   nonisolated static var github: ForgeClient {
     ForgeClient(
       resolveProject: { repositoryRootURL in
         @Dependency(GithubCLIClient.self) var githubCLI
         @Dependency(GitClientDependency.self) var gitClient
-        // `gh repo view` honours the user's default-repo resolution (fork ->
-        // upstream), so it wins; the git remote parser is the offline fallback.
+        // API resolution follows a fork to its base repository; the git remote
+        // parser is the offline fallback.
         var info = await githubCLI.resolveRemoteInfo(repositoryRootURL)
         if info == nil {
           info = await gitClient.remoteInfo(repositoryRootURL)
@@ -155,9 +159,10 @@ extension ForgeClient {
         // GitHub summaries already carry the full detail tier.
         nil
       },
-      mergePullRequest: { worktreeRoot, project, number, strategy in
+      mergePullRequest: { worktreeRoot, project, number, strategy, action in
         @Dependency(GithubCLIClient.self) var githubCLI
-        try await githubCLI.mergePullRequest(worktreeRoot, project.flatMap(GithubRemoteInfo.init), number, strategy)
+        return try await githubCLI.mergePullRequest(
+          worktreeRoot, project.flatMap(GithubRemoteInfo.init), number, strategy, action)
       },
       closePullRequest: { worktreeRoot, project, number in
         @Dependency(GithubCLIClient.self) var githubCLI

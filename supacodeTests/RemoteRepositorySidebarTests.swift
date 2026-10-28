@@ -1827,14 +1827,14 @@ struct RemotePullRequestTests {
         if command.contains("which") {
           if missingCLI { throw GitClientError.commandFailed(command: "which gh", message: "not installed") }
           output = "/usr/local/bin/gh"
-        } else if command.contains("repo") && command.contains("owner,name,url") {
-          #expect(command.contains("/srv/pr-repo"))
-          output = #"{"owner":{"login":"owner"},"name":"repo","url":"https://github.com/owner/repo"}"#
-        } else if command.contains("graphql") {
-          output =
-            #"{"data":{"repository":{"branch0":{"nodes":[{"number":42,"title":"Remote PR","state":"OPEN","additions":1,"deletions":0,"isDraft":false,"url":"https://github.com/owner/repo/pull/42","headRefName":"main","headRepository":{"name":"repo","owner":{"login":"owner"}}}]}}}}"#
-        } else if command.contains("diff") {
-          output = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"
+        } else if command.contains("auth"), command.contains("token") {
+          output = "ghp_remote_test_token"
+        } else if command.contains("--get-url") {
+          output = "git@github.com:owner/repo.git"
+        } else if command.contains("hosts.yml") {
+          output = "github.com:"
+        } else if command.contains("remote") {
+          output = "origin"
         } else {
           output = ""
         }
@@ -1845,6 +1845,27 @@ struct RemotePullRequestTests {
         return ShellOutput(stdout: "", stderr: "", exitCode: 0)
       }
     )
+  }
+
+  private static func http(commands: LockIsolated<[String]>) -> GithubHTTPClient {
+    GithubHTTPClient { request in
+      let query = request.httpBody.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+      commands.withValue { $0.append("HTTP \(request.url!.path) \(request.value(forHTTPHeaderField: "Accept") ?? "") \(query)") }
+      #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer ghp_remote_test_token")
+      let output: String
+      if query.contains("markPullRequestReadyForReview") {
+        output = #"{"data":{"markPullRequestReadyForReview":{"clientMutationId":null}}}"#
+      } else if query.contains("pullRequest(number:") {
+        output = #"{"data":{"repository":{"pullRequest":{"id":"PR_42","state":"OPEN","isDraft":true,"headRefOid":"head"}}}}"#
+      } else if request.url?.path == "/graphql" {
+        output = #"{"data":{"repository":{"branch0":{"nodes":[{"number":42,"title":"Remote PR","state":"OPEN","additions":1,"deletions":0,"isDraft":false,"url":"https://github.com/owner/repo/pull/42","headRefName":"main","headRepository":{"name":"repo","owner":{"login":"owner"}}}]}}}}"#
+      } else if request.value(forHTTPHeaderField: "Accept") == "application/vnd.github.diff" {
+        output = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"
+      } else {
+        output = #"{"owner":{"login":"owner"},"name":"repo"}"#
+      }
+      return (Data(output.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+    }
   }
 
   private static func state(availability: RepositoriesFeature.GithubIntegrationAvailability = .unavailable)
@@ -1864,6 +1885,7 @@ struct RemotePullRequestTests {
       RepositoriesFeature()
     } withDependencies: {
       $0[ShellClient.self] = Self.shell(commands: commands)
+      $0[GithubHTTPClient.self] = Self.http(commands: commands)
       $0.continuousClock = ImmediateClock()
       $0.githubCLI.resolveRemoteInfo = { _ in
         Issue.record("Used local gh")
@@ -1891,6 +1913,7 @@ struct RemotePullRequestTests {
       RepositoriesFeature()
     } withDependencies: {
       $0[ShellClient.self] = Self.shell(commands: commands)
+      $0[GithubHTTPClient.self] = Self.http(commands: commands)
       $0.continuousClock = ImmediateClock()
       $0[URLOpenerClient.self].open = { url in opened.withValue { $0.append(url) } }
     }
@@ -1907,6 +1930,7 @@ struct RemotePullRequestTests {
       RepositoriesFeature()
     } withDependencies: {
       $0[ShellClient.self] = Self.shell(commands: commands)
+      $0[GithubHTTPClient.self] = Self.http(commands: commands)
     }
     await store.send(
       .worktreeInfoEvent(
@@ -1916,7 +1940,7 @@ struct RemotePullRequestTests {
     #expect(commands.value.isEmpty)
   }
 
-  @Test(.dependencies, arguments: [false, true]) func inspectorActionUsesRemoteCLI(missingCLI: Bool) async {
+  @Test(.dependencies, arguments: [false, true]) func inspectorActionUsesRemoteCredentials(missingCLI: Bool) async {
     let commands = LockIsolated<[String]>([])
     var state = Self.state(availability: .disabled)
     let pullRequest = try! GithubCLIOutput.decode(
@@ -1931,6 +1955,7 @@ struct RemotePullRequestTests {
       RepositoriesFeature()
     } withDependencies: {
       $0[ShellClient.self] = Self.shell(commands: commands, missingCLI: missingCLI)
+      $0[GithubHTTPClient.self] = Self.http(commands: commands)
       $0.continuousClock = clock
     }
     store.exhaustivity = .off
@@ -1938,16 +1963,16 @@ struct RemotePullRequestTests {
     if missingCLI {
       await store.receive(\.presentAlert)
       #expect(store.state.alert != nil)
-      #expect(!commands.value.contains { $0.contains("ready") })
+      #expect(!commands.value.contains { $0.contains("markPullRequestReadyForReview") })
     } else {
       await store.receive(\.delayedPullRequestRefresh)
-      #expect(commands.value.contains { $0.contains("ready") && $0.contains("/srv/pr-repo") })
+      #expect(commands.value.contains { $0.contains("markPullRequestReadyForReview") })
       await clock.advance(by: .seconds(10))
     }
     await store.finish()
   }
 
-  @Test(.dependencies) func diffWindowLoadsOverSSH() async {
+  @Test(.dependencies) func diffWindowUsesRemoteCredentialsWithNativeHTTP() async {
     let commands = LockIsolated<[String]>([])
     let request = PullRequestDiffRequest(
       repositoryRootURL: Self.repository.rootURL, repositoryHost: Self.host, number: 42,
@@ -1957,6 +1982,7 @@ struct RemotePullRequestTests {
       PullRequestDiffFeature()
     } withDependencies: {
       $0[ShellClient.self] = Self.shell(commands: commands)
+      $0[GithubHTTPClient.self] = Self.http(commands: commands)
     }
     store.exhaustivity = .off
     await store.send(.task)

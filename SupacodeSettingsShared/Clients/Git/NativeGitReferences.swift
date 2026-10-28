@@ -92,6 +92,32 @@ nonisolated extension NativeGitRepository {
     }
   }
 
+  /// A remote explicitly selected by a CLI through a remote.<name> config key.
+  public static func configuredRemote(at directory: URL, marker: String) throws -> (url: String, value: String)? {
+    try withRepository(at: directory) { repository in
+      var config: OpaquePointer?
+      guard git_repository_config_snapshot(&config, repository) == 0, let config else { throw failure() }
+      defer { git_config_free(config) }
+      var remotes = git_strarray()
+      guard git_remote_list(&remotes, repository) == 0 else { throw failure() }
+      defer { git_strarray_dispose(&remotes) }
+      guard let names = remotes.strings else { return nil }
+      for index in 0..<remotes.count {
+        guard let name = names[index] else { continue }
+        var value = git_buf()
+        defer { git_buf_dispose(&value) }
+        let key = "remote.\(String(cString: name)).\(marker)"
+        guard git_config_get_string_buf(&value, config, key) == 0, let text = value.ptr else { continue }
+        var remote: OpaquePointer?
+        guard git_remote_lookup(&remote, repository, name) == 0, let remote else { continue }
+        defer { git_remote_free(remote) }
+        guard let url = git_remote_url(remote) else { continue }
+        return (String(cString: url), String(cString: text))
+      }
+      return nil
+    }
+  }
+
   /// Fetch URLs in Git's remote-list order, with origin preferred and
   /// `url.*.insteadOf` rewrites applied by libgit2.
   public static func remoteURLs(at directory: URL) throws -> [String] {

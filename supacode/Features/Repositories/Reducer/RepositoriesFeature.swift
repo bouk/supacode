@@ -3116,6 +3116,7 @@ struct RepositoriesFeature {
           }
 
         case .merge:
+          guard let mergeAction = pullRequest.mergeAction else { return .none }
           let forgeRegistry = forgeRegistry
           return .run { send in
             guard
@@ -3141,10 +3142,12 @@ struct RepositoriesFeature {
               )
             }
             let project = await forge.resolveProject(repoRoot)
-            await send(.showToast(.inProgress("Merging pull request…")))
+            let progressMessage = mergeAction == .merge ? "Merging pull request…"
+              : (pullRequest.mergeActionTitle(noun: "Pull Request") ?? "Updating pull request") + "…"
+            await send(.showToast(.inProgress(progressMessage)))
             do {
-              try await forge.mergePullRequest(worktreeRoot, project, pullRequest.number, strategy)
-              await send(.showToast(.success("Pull request merged")))
+              let outcome = try await forge.mergePullRequest(worktreeRoot, project, pullRequest.number, strategy, mergeAction)
+              await send(.showToast(.success(outcome.message)))
               await send(.worktreeInfoEvent(pullRequestRefresh))
               await send(.delayedPullRequestRefresh(worktreeID))
             } catch {

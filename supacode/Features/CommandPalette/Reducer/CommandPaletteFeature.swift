@@ -559,13 +559,12 @@ private func pullRequestItems(
   let vocabulary = capabilities.vocabulary
   let isOpen = pullRequest.state == .open
   let isDraft = pullRequest.isDraft
-  let mergeReadiness = PullRequestMergeReadiness(pullRequest: pullRequest)
   let checks = pullRequest.statusCheckRollup?.checks ?? []
   let breakdown = PullRequestCheckBreakdown(checks: checks)
   let hasFailingChecks = breakdown.failed > 0
   // Permissive on purpose: merge stays offered while mergeability is still
   // computing; only a confirmed block hides it.
-  let canMerge = isOpen && !isDraft && mergeReadiness.blockingReason == nil
+  let canMerge = pullRequest.mergeAction != nil
 
   func makeReadyItem() -> CommandPaletteItem? {
     guard isOpen && isDraft && capabilities.canMarkReady else { return nil }
@@ -644,6 +643,7 @@ private func pullRequestItems(
   items.append(contentsOf: makeFailingItems())
 
   if let mergeItem = makeMergePullRequestItem(
+    pullRequest: pullRequest,
     canMerge: canMerge,
     breakdown: breakdown,
     repositoryID: repositoryID,
@@ -682,6 +682,7 @@ private func makeOpenPullRequestItem(
 }
 
 private func makeMergePullRequestItem(
+  pullRequest: ForgePullRequest,
   canMerge: Bool,
   breakdown: PullRequestCheckBreakdown,
   repositoryID: Repository.ID,
@@ -696,8 +697,8 @@ private func makeMergePullRequestItem(
     : "\(successfulChecks) successful checks"
   return CommandPaletteItem(
     id: CommandPaletteItemID.pullRequestMerge(repositoryID),
-    title: "Merge \(vocabulary.abbreviation)",
-    subtitle: "Merge Ready - \(successfulChecksLabel)",
+    title: pullRequest.mergeActionTitle(noun: vocabulary.abbreviation) ?? "Merge \(vocabulary.abbreviation)",
+    subtitle: pullRequest.mergeAction == .merge ? "Merge Ready - \(successfulChecksLabel)" : pullRequest.title,
     kind: .mergePullRequest(worktreeID),
     priorityTier: 0
   )

@@ -330,16 +330,16 @@ private struct PullRequestActionsSection: View {
     let isDraft = pullRequest.isDraft
     // Permissive on purpose: merge stays offered while mergeability is still
     // computing; only a confirmed block hides it.
-    let canMerge = isOpen && !isDraft && PullRequestMergeReadiness(pullRequest: pullRequest).blockingReason == nil
+    let mergeTitle = pullRequest.mergeActionTitle(noun: vocabulary.noun)
     let hasFailingChecks = breakdown.failed > 0
     let checks = pullRequest.statusCheckRollup?.checks ?? []
     let hasFailingCheckWithDetails = checks.contains { $0.checkState == .failure && $0.detailsUrl != nil }
 
     if isOpen {
       Section("Actions") {
-        if canMerge {
+        if let mergeTitle {
           PullRequestActionRow(
-            title: "Merge \(vocabulary.noun)", icon: .asset(SidebarPullRequestIcon.merged.assetName)
+            title: mergeTitle, icon: .asset(SidebarPullRequestIcon.merged.assetName)
           ) {
             onPullRequestAction(.merge)
           }

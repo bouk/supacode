@@ -1,779 +1,455 @@
 import ConcurrencyExtras
 import Dependencies
+import DependenciesTestSupport
 import Foundation
 import Testing
 
 @testable import SupacodeSettingsShared
 @testable import supacode
 
-actor GithubBatchShellProbe {
-  struct Snapshot {
-    let ghCallCount: Int
-    let maxInFlight: Int
-    let whichCallCount: Int
-    let loginCallCount: Int
-  }
+nonisolated struct GithubCLIClientTests {
+  private actor RequestGate {
+    private var arrivals = 0
+    private var active = 0
+    private var maximum = 0
+    private var opened = false
+    private var ready: CheckedContinuation<Void, Never>?
+    private var waiting: [CheckedContinuation<Void, Never>] = []
 
-  private var ghCallCount = 0
-  private var inFlight = 0
-  private var maxInFlight = 0
-  private var whichCallCount = 0
-  private var loginCallCount = 0
-
-  func beginGhCall() -> Int {
-    ghCallCount += 1
-    inFlight += 1
-    if inFlight > maxInFlight {
-      maxInFlight = inFlight
+    func enter() async {
+      arrivals += 1
+      active += 1
+      maximum = max(maximum, active)
+      if arrivals == 3 {
+        ready?.resume()
+        ready = nil
+      }
+      if !opened { await withCheckedContinuation { waiting.append($0) } }
     }
-    return ghCallCount
+    func leave() { active -= 1 }
+    func waitUntilThree() async {
+      if arrivals < 3 { await withCheckedContinuation { ready = $0 } }
+    }
+    func open() {
+      opened = true
+      waiting.forEach { $0.resume() }
+      waiting = []
+    }
+    func snapshot() -> (count: Int, maximum: Int) { (arrivals, maximum) }
   }
 
-  func endGhCall() {
-    inFlight -= 1
+  @Test func batchConcurrencyAndCredentialLookupAreBounded() async throws {
+    let gate = RequestGate()
+    let tokens = LockIsolated<[[String]]>([])
+    let client = Self.api(
+      { request in
+        await gate.enter()
+        await gate.leave()
+        return Self.response(request, #"{"data":{"repository":{"branch0":{"nodes":[]}}}}"#)
+      }, credentials: Self.credentials(calls: tokens))
+    let task = Task {
+      try await client.batchPullRequests(
+        host: "github.com", owner: "owner", repo: "repo",
+        branches: (0..<40).map { "feature-\($0)" })
+    }
+    await gate.waitUntilThree()
+    #expect(await gate.snapshot().maximum == 3)
+    await gate.open()
+    _ = try await task.value
+    #expect(await gate.snapshot().count == 8)
+    #expect(tokens.value.count == 1)
   }
 
-  func recordWhichCall() {
-    whichCallCount += 1
+  @Test func logRedirectsNeverForwardTokensToStorage() {
+    var request = URLRequest(url: URL(string: "https://storage.example.com/log.txt")!)
+    request.setValue("Bearer fake-secret", forHTTPHeaderField: "Authorization")
+    let original = URL(string: "https://api.github.com/repos/owner/repo/actions/jobs/1/logs")!
+    #expect(
+      GithubHTTPClient.redirectedRequest(request, from: original)?.value(forHTTPHeaderField: "Authorization") == nil)
+    request.url = URL(string: "http://storage.example.com/log.txt")!
+    #expect(GithubHTTPClient.redirectedRequest(request, from: original) == nil)
+    request.url = URL(string: "https://api.github.com/log.txt")!
+    #expect(
+      GithubHTTPClient.redirectedRequest(request, from: original)?.value(forHTTPHeaderField: "Authorization")
+        == "Bearer fake-secret")
   }
 
-  func recordLoginCall() {
-    loginCallCount += 1
+  @Test @MainActor func nativeRepositorySelectionHonorsGhSetDefault() async throws {
+    let directory = FileManager.default.temporaryDirectory.appending(path: "github-default-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let path = directory.path(percentEncoded: false)
+    try await Self.git(["init", path])
+    try await Self.git(["-C", path, "remote", "add", "origin", "https://github.com/me/fork.git"])
+    try await Self.git(["-C", path, "config", "remote.origin.gh-resolved", "base"])
+    #expect(
+      GithubRepositorySelection.native(at: directory, environment: [:])?.remote
+        == GithubRemoteInfo(host: "github.com", owner: "me", repo: "fork"))
+    try await Self.git(["-C", path, "config", "remote.origin.gh-resolved", "upstream/repo"])
+    #expect(
+      GithubRepositorySelection.native(at: directory, environment: [:])?.remote
+        == Self.remoteWithOwner("upstream"))
+    #expect(
+      GithubRepositorySelection.native(at: directory, environment: ["GH_REPO": "other/project"])?.remote
+        == GithubRemoteInfo(host: "github.com", owner: "other", repo: "project"))
   }
 
-  func snapshot() -> Snapshot {
-    Snapshot(
-      ghCallCount: ghCallCount,
-      maxInFlight: maxInFlight,
-      whichCallCount: whichCallCount,
-      loginCallCount: loginCallCount
-    )
+  private static func git(_ arguments: [String]) async throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.arguments = arguments
+    process.environment = ProcessInfo.processInfo.environment.merging([
+      "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+    ]) { _, new in new }
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try await process.runToExit()
+    #expect(process.terminationStatus == 0)
   }
-}
 
-struct GithubCLIClientTests {
-  @Test func batchPullRequestsCapsConcurrencyAtThree() async throws {
-    let probe = GithubBatchShellProbe()
+  private static func remoteWithOwner(_ owner: String) -> GithubRemoteInfo {
+    GithubRemoteInfo(host: "github.com", owner: owner, repo: "repo")
+  }
+
+  @Test func explicitRepositorySelectionDoesNotFollowAForkParent() async {
+    var client = Self.api { request in
+      Self.response(
+        request, #"{"name":"repo","owner":{"login":"owner"},"parent":{"name":"parent","owner":{"login":"upstream"}}}"#)
+    }
+    client.repositorySelection = { _ in GithubRepositorySelection(remote: Self.remote) }
+    #expect(await client.resolveRemoteInfo(root: Self.root) == Self.remote)
+  }
+
+  @Test func enterpriseRepositoryCanHaveAnArbitraryHostname() async {
+    var client = Self.api { request in
+      #expect(request.url?.absoluteString == "https://code.example.com/api/v3/repos/team/repo")
+      return Self.response(request, #"{"name":"repo","owner":{"login":"team"}}"#)
+    }
+    var git = GitClientDependency.testValue
+    git.gitRemote = { _ in GitRemote.parse("git@code.example.com:team/repo.git") }
+    client = GithubAPIClient(http: client.http, credentials: client.credentials, git: git)
+    #expect(
+      await client.resolveRemoteInfo(root: Self.root)
+        == GithubRemoteInfo(host: "code.example.com", owner: "team", repo: "repo"))
+  }
+
+  @Test func authStatusUsesTheAPIWithGhsActiveToken() async throws {
+    let client = Self.api { request in
+      #expect(request.url?.absoluteString == "https://api.github.com/user")
+      return Self.response(request, #"{"login":"octocat"}"#)
+    }
+    #expect(try await client.authStatus() == GithubAuthStatus(username: "octocat", host: "github.com"))
+  }
+
+  @Test func credentialFailuresNeverExposeTokenOutput() async {
     let shell = ShellClient(
-      run: { executableURL, arguments, _ in
-        if executableURL.lastPathComponent == "which" {
-          await probe.recordWhichCall()
-          return ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0)
-        }
-        _ = arguments
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { executableURL, arguments, _, _ in
-        guard executableURL.lastPathComponent == "gh" else {
-          return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-        }
-        await probe.recordLoginCall()
-        _ = await probe.beginGhCall()
-        do {
-          try await ContinuousClock().sleep(for: .milliseconds(80))
-          let stdout = graphQLResponse(for: arguments)
-          await probe.endGhCall()
-          return ShellOutput(stdout: stdout, stderr: "", exitCode: 0)
-        } catch {
-          await probe.endGhCall()
-          throw error
-        }
-      }
-    )
-    let client = GithubCLIClient.live(shell: shell)
-    let branches = (0..<100).map { "feature-\($0)" }
-
-    _ = try await client.batchPullRequests("github.com", "khoi", "repo", branches)
-
-    let snapshot = await probe.snapshot()
-    #expect(snapshot.ghCallCount == 20)
-    #expect(snapshot.maxInFlight == 3)
-    #expect(snapshot.whichCallCount == 1)
-    #expect(snapshot.loginCallCount == 20)
-  }
-
-  @Test func batchPullRequestsThrowsWhenAnyChunkFails() async {
-    let probe = GithubBatchShellProbe()
-    let shell = ShellClient(
-      run: { executableURL, arguments, _ in
-        if executableURL.lastPathComponent == "which" {
-          await probe.recordWhichCall()
-          return ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0)
-        }
-        _ = arguments
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { executableURL, arguments, _, _ in
-        guard executableURL.lastPathComponent == "gh" else {
-          return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-        }
-        await probe.recordLoginCall()
-        let callIndex = await probe.beginGhCall()
-        if callIndex == 2 {
-          await probe.endGhCall()
-          throw ShellClientError(
-            command: "gh api graphql",
-            stdout: "",
-            stderr: "boom",
-            exitCode: 1
-          )
-        }
-        do {
-          try await ContinuousClock().sleep(for: .milliseconds(40))
-          let stdout = graphQLResponse(for: arguments)
-          await probe.endGhCall()
-          return ShellOutput(stdout: stdout, stderr: "", exitCode: 0)
-        } catch {
-          await probe.endGhCall()
-          throw error
-        }
-      }
-    )
-    let client = GithubCLIClient.live(shell: shell)
-    let branches = (0..<30).map { "feature-\($0)" }
-
+      run: { _, _, _ in ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0) },
+      runLoginImpl: { _, _, _, _ in
+        throw ShellClientError(command: "gh auth token", stdout: "fake-secret-token", stderr: "failed", exitCode: 1)
+      })
+    let credentials = GithubCredentials(shell: shell, fallbackExecutableURLs: [])
     do {
-      _ = try await client.batchPullRequests("github.com", "khoi", "repo", branches)
-      Issue.record("Expected batchPullRequests to throw")
-    } catch let error as GithubCLIError {
-      switch error {
-      case .commandFailed:
-        break
-      case .outdated, .unavailable, .gatewayTimeout:
-        Issue.record("Unexpected GithubCLIError: \(error.localizedDescription)")
-      }
+      _ = try await credentials.token(for: "github.com")
+      Issue.record("Expected an authentication error")
     } catch {
-      Issue.record("Unexpected error type: \(error.localizedDescription)")
+      #expect(!error.localizedDescription.contains("fake-secret-token"))
+      #expect(error.localizedDescription.contains("gh auth login"))
     }
   }
 
-  @Test func batchPullRequestsRetriesWithoutMergeQueueFieldWhenRejected() async throws {
-    // GHES < 3.8 rejects `mergeQueueEntry`; the fetch must retry without it so PR state still loads.
-    let probe = GithubBatchShellProbe()
-    let shell = ShellClient(
-      run: { executableURL, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          await probe.recordWhichCall()
-          return ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0)
-        }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { executableURL, arguments, _, _ in
-        guard executableURL.lastPathComponent == "gh" else {
-          return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-        }
-        await probe.recordLoginCall()
-        _ = await probe.beginGhCall()
-        let query = arguments.first { $0.hasPrefix("query=") } ?? ""
-        if query.contains("mergeQueueEntry") {
-          await probe.endGhCall()
-          throw ShellClientError(
-            command: "gh api graphql",
-            stdout: "",
-            stderr: "gh: Field 'mergeQueueEntry' doesn't exist on type 'PullRequest'",
-            exitCode: 1
-          )
-        }
-        let reviews = query.contains("latestOpinionatedReviews") ? #"{"nodes":[{"state":"APPROVED"}]}"# : "null"
-        // The field-omitted retry returns a real PR so the test proves PR state survives the fallback.
-        let stdout = """
-          {"data":{"repository":{"branch0":{"nodes":[{
-            "number":42,"title":"Queued","state":"OPEN","additions":1,"deletions":0,"isDraft":false,
-            "reviewDecision":null,"updatedAt":"2026-05-01T00:00:00Z",
-            "latestOpinionatedReviews":\(reviews),
-            "url":"https://github.com/khoi/repo/pull/42","headRefName":"feature-0","baseRefName":"main",
-            "headRepository":{"name":"repo","owner":{"login":"khoi"}}
-          }]}}}}
-          """
-        await probe.endGhCall()
-        return ShellOutput(stdout: stdout, stderr: "", exitCode: 0)
-      }
-    )
-    let client = GithubCLIClient.live(shell: shell)
-    let branches = ["feature-0"]
+  private static let root = URL(fileURLWithPath: "/tmp/github-api-test")
+  private static let remote = GithubRemoteInfo(host: "github.com", owner: "owner", repo: "repo")
 
-    let result = try await client.batchPullRequests("github.com", "khoi", "repo", branches)
-
-    // PR state survives the field-omitted retry, and the retry fired exactly once.
-    #expect(result["feature-0"]?.number == 42)
-    #expect(result["feature-0"]?.mergeQueueEntry == nil)
-    // Only the rejected field is dropped; the reviews selection survives the retry.
-    #expect(result["feature-0"]?.fallbackReviewDecision == .approved)
-    let snapshot = await probe.snapshot()
-    #expect(snapshot.loginCallCount == 2)
+  private static func response(_ request: URLRequest, _ text: String, status: Int = 200) -> (Data, HTTPURLResponse) {
+    (Data(text.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
   }
 
-  @Test func batchPullRequestsRetriesWithoutLatestReviewsWhenRejected() async throws {
-    // A GHES rejecting the display-only reviews selection must not take PR state down with it.
-    let probe = GithubBatchShellProbe()
-    let shell = ShellClient(
-      run: { executableURL, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          await probe.recordWhichCall()
-          return ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0)
-        }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { executableURL, arguments, _, _ in
-        guard executableURL.lastPathComponent == "gh" else {
-          return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-        }
-        await probe.recordLoginCall()
-        _ = await probe.beginGhCall()
-        let query = arguments.first { $0.hasPrefix("query=") } ?? ""
-        if query.contains("latestOpinionatedReviews") {
-          await probe.endGhCall()
-          throw ShellClientError(
-            command: "gh api graphql",
-            stdout: "",
-            stderr: "gh: Field 'latestOpinionatedReviews' doesn't accept argument 'writersOnly'",
-            exitCode: 1
-          )
-        }
-        // The field-omitted retry returns a real PR so the test proves PR state survives the fallback.
-        let stdout = """
-          {"data":{"repository":{"branch0":{"nodes":[{
-            "number":42,"title":"Queued","state":"OPEN","additions":1,"deletions":0,"isDraft":false,
-            "reviewDecision":null,"updatedAt":"2026-05-01T00:00:00Z",
-            "url":"https://github.com/khoi/repo/pull/42","headRefName":"feature-0","baseRefName":"main",
-            "headRepository":{"name":"repo","owner":{"login":"khoi"}}
-          }]}}}}
-          """
-        await probe.endGhCall()
-        return ShellOutput(stdout: stdout, stderr: "", exitCode: 0)
-      }
-    )
-    let client = GithubCLIClient.live(shell: shell)
-    let branches = ["feature-0"]
-
-    let result = try await client.batchPullRequests("github.com", "khoi", "repo", branches)
-
-    // PR state survives the field-omitted retry, and the retry fired exactly once.
-    #expect(result["feature-0"]?.number == 42)
-    #expect(result["feature-0"]?.fallbackReviewDecision == nil)
-    let snapshot = await probe.snapshot()
-    #expect(snapshot.loginCallCount == 2)
+  private static func body(_ request: URLRequest) throws -> [String: Any] {
+    let data = try #require(request.httpBody)
+    return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
   }
 
-  @Test(arguments: [
-    "gh: error fetching mergeQueueEntry: API rate limit exceeded",
-    "gh: Resource not accessible by integration (latestOpinionatedReviews)",
-  ])
-  func batchPullRequestsPropagatesNonRejectionErrorMentioningOptionalField(stderr: String) async {
-    // An error that names the field but is not a "doesn't exist" rejection must propagate, not retry.
-    let probe = GithubBatchShellProbe()
+  private static func credentials(calls: LockIsolated<[[String]]> = .init([])) -> GithubCredentials {
     let shell = ShellClient(
-      run: { executableURL, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          await probe.recordWhichCall()
-          return ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0)
-        }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
+      run: { _, arguments, _ in
+        #expect(arguments == ["gh"])
+        return ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0)
       },
-      runLoginImpl: { executableURL, _, _, _ in
-        guard executableURL.lastPathComponent == "gh" else {
-          return ShellOutput(stdout: "", stderr: "", exitCode: 0)
+      runLoginImpl: { executable, arguments, _, log in
+        #expect(executable.lastPathComponent == "gh")
+        #expect(Array(arguments.prefix(2)) == ["auth", "token"])
+        #expect(log == false)
+        calls.withValue { $0.append(arguments) }
+        return ShellOutput(stdout: "shell banner\nghp_fake_test_token\n", stderr: "", exitCode: 0)
+      })
+    return GithubCredentials(shell: shell, fallbackExecutableURLs: [], configuredHosts: { ["github.com"] })
+  }
+
+  private static func api(
+    _ send: @escaping @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse),
+    credentials: GithubCredentials? = nil
+  ) -> GithubAPIClient {
+    var git = GitClientDependency.testValue
+    git.remoteInfo = { _ in remote }
+    return GithubAPIClient(http: GithubHTTPClient(data: send), credentials: credentials ?? Self.credentials(), git: git)
+  }
+
+  private static func state(
+    status: String = "BLOCKED", canEnable: Bool = true, queue: Bool = false,
+    queued: Bool = false, enabled: Bool = false, conflicting: Bool = false
+  ) -> String {
+    """
+    {"data":{"repository":{"pullRequest":{
+      "id":"PR_42","state":"OPEN","isDraft":false,"headRefOid":"expected-head",
+      "mergeable":"\(conflicting ? "CONFLICTING" : "MERGEABLE")","mergeStateStatus":"\(status)",
+      "isMergeQueueEnabled":\(queue),"isInMergeQueue":\(queued),"viewerCanEnableAutoMerge":\(canEnable),
+      "autoMergeRequest":\(enabled ? "{\"enabledAt\":\"2026-10-28T00:00:00Z\"}" : "null")
+    }}}}
+    """
+  }
+
+  @Test(arguments: ["BLOCKED", "BEHIND", "UNKNOWN"])
+  func protectedBranchesEnableAutoMerge(status: String) async throws {
+    let mutations = LockIsolated<[String]>([])
+    let calls = LockIsolated<[[String]]>([])
+    let client = Self.api(
+      { request in
+        #expect(request.url?.absoluteString == "https://api.github.com/graphql")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer ghp_fake_test_token")
+        let body = try Self.body(request)
+        let query = try #require(body["query"] as? String)
+        if query.hasPrefix("mutation") {
+          mutations.withValue { $0.append(query) }
+          #expect(query.contains("enablePullRequestAutoMerge"))
+          let variables = try #require(body["variables"] as? [String: Any])
+          let input = try #require(variables["input"] as? [String: String])
+          #expect(input == ["pullRequestId": "PR_42", "expectedHeadOid": "expected-head", "mergeMethod": "SQUASH"])
+          return Self.response(request, #"{"data":{"enablePullRequestAutoMerge":{"clientMutationId":null}}}"#)
         }
-        await probe.recordLoginCall()
-        _ = await probe.beginGhCall()
-        await probe.endGhCall()
-        throw ShellClientError(
-          command: "gh api graphql",
-          stdout: "",
-          stderr: stderr,
-          exitCode: 1
+        return Self.response(request, Self.state(status: status))
+      }, credentials: Self.credentials(calls: calls))
+    #expect(
+      try await client.merge(root: Self.root, remote: Self.remote, number: 42, strategy: .squash, action: .merge)
+        == .autoMergeEnabled)
+    #expect(mutations.value.count == 1)
+    #expect(calls.value == [["auth", "token", "--hostname", "github.com"]])
+  }
+
+  @Test(arguments: ["CLEAN", "HAS_HOOKS", "UNSTABLE"])
+  func readyPullRequestsMergeDirectly(status: String) async throws {
+    let client = Self.api { request in
+      let query = try #require(Self.body(request)["query"] as? String)
+      if query.hasPrefix("mutation") {
+        #expect(query.contains("mergePullRequest(input:"))
+        return Self.response(request, #"{"data":{"mergePullRequest":{"clientMutationId":null}}}"#)
+      }
+      return Self.response(request, Self.state(status: status))
+    }
+    #expect(
+      try await client.merge(
+        root: Self.root, remote: Self.remote, number: 42, strategy: .rebase, action: .enableAutoMerge) == .merged)
+  }
+
+  @Test(arguments: [false, true]) func mergeQueueUsesGitHubPolicy(ready: Bool) async throws {
+    let operation = ready ? "enqueuePullRequest" : "enablePullRequestAutoMerge"
+    let client = Self.api { request in
+      let query = try #require(Self.body(request)["query"] as? String)
+      if query.hasPrefix("mutation") {
+        #expect(query.contains(operation))
+        let input = try #require((Self.body(request)["variables"] as? [String: Any])?["input"] as? [String: String])
+        #expect(input["expectedHeadOid"] == "expected-head")
+        if ready { #expect(input["mergeMethod"] == nil) }
+        return Self.response(request, "{\"data\":{\"\(operation)\":{\"clientMutationId\":null}}}")
+      }
+      return Self.response(request, Self.state(status: ready ? "CLEAN" : "BLOCKED", canEnable: false, queue: true))
+    }
+    let result = try await client.merge(
+      root: Self.root, remote: Self.remote, number: 42, strategy: .squash, action: .enqueue)
+    #expect(result == (ready ? .queued : .autoMergeEnabled))
+  }
+
+  @Test(arguments: [false, true]) func alreadyScheduledRequestsAreNotMutated(queued: Bool) async throws {
+    let client = Self.api { request in
+      let query = try #require(Self.body(request)["query"] as? String)
+      #expect(!query.hasPrefix("mutation"))
+      return Self.response(request, Self.state(queued: queued, enabled: !queued))
+    }
+    #expect(
+      try await client.merge(
+        root: Self.root, remote: Self.remote, number: 42, strategy: .merge, action: .enableAutoMerge)
+        == (queued ? .queued : .autoMergeEnabled))
+  }
+
+  @Test func disableAutoMergeIsExplicit() async throws {
+    let client = Self.api { request in
+      let query = try #require(Self.body(request)["query"] as? String)
+      if query.hasPrefix("mutation") {
+        #expect(query.contains("disablePullRequestAutoMerge"))
+        return Self.response(request, #"{"data":{"disablePullRequestAutoMerge":{"clientMutationId":null}}}"#)
+      }
+      return Self.response(request, Self.state(enabled: true))
+    }
+    #expect(
+      try await client.merge(
+        root: Self.root, remote: Self.remote, number: 42, strategy: .merge, action: .disableAutoMerge)
+        == .autoMergeDisabled)
+  }
+
+  @Test(arguments: [false, true]) func blockedOrConflictingRequestsCannotBypassPolicy(conflicting: Bool) async {
+    let client = Self.api { request in
+      let query = try #require(Self.body(request)["query"] as? String)
+      #expect(!query.hasPrefix("mutation"))
+      return Self.response(request, Self.state(canEnable: false, conflicting: conflicting))
+    }
+    await #expect(throws: (any Error).self) {
+      try await client.merge(root: Self.root, remote: Self.remote, number: 42, strategy: .merge, action: .merge)
+    }
+  }
+
+  @Test func mutationErrorsAreNotRetriedOrReportedAsSuccess() async {
+    let mutations = LockIsolated(0)
+    let client = Self.api { request in
+      if (try #require(Self.body(request)["query"] as? String)).hasPrefix("mutation") {
+        mutations.withValue { $0 += 1 }
+        return Self.response(
+          request, #"{"data":{"mergePullRequest":null},"errors":[{"message":"Head branch changed"}]}"#)
+      }
+      return Self.response(request, Self.state(status: "CLEAN"))
+    }
+    await #expect(throws: GithubCLIError.commandFailed("Head branch changed")) {
+      try await client.merge(root: Self.root, remote: Self.remote, number: 42, strategy: .merge, action: .merge)
+    }
+    #expect(mutations.value == 1)
+  }
+
+  @Test func restOperationsUseNativeHTTP() async throws {
+    let paths = LockIsolated<[String]>([])
+    let client = Self.api { request in
+      let path = request.url!.path
+      paths.withValue { $0.append(path) }
+      if path == "/repos/owner/repo" {
+        return Self.response(request, #"{"name":"repo","owner":{"login":"owner"}}"#)
+      }
+      if path.hasSuffix("/pulls/42"), request.httpMethod == "PATCH" {
+        let data = try #require(request.httpBody)
+        #expect(try JSONDecoder().decode([String: String].self, from: data) == ["state": "closed"])
+        return Self.response(request, "{}")
+      }
+      if path.hasSuffix("/pulls/42") {
+        #expect(request.value(forHTTPHeaderField: "Accept") == "application/vnd.github.diff")
+        return Self.response(request, "diff --git a/file b/file\n")
+      }
+      if path.hasSuffix("/actions/runs") {
+        #expect(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first?.value == "a & b")
+        return Self.response(
+          request,
+          #"{"workflow_runs":[{"id":12,"name":"CI","display_title":"Build","status":"completed","conclusion":"failure","created_at":"2026-10-28T00:00:00Z","updated_at":"2026-10-28T00:00:01Z"}]}"#
         )
       }
-    )
-    let client = GithubCLIClient.live(shell: shell)
-    let branches = ["feature-0"]
-
-    do {
-      _ = try await client.batchPullRequests("github.com", "khoi", "repo", branches)
-      Issue.record("Expected batchPullRequests to propagate the error")
-    } catch GithubCLIError.commandFailed {
-      // Expected: the field-omission retry only fires for a "doesn't exist" rejection.
-    } catch {
-      Issue.record("Unexpected error type: \(error.localizedDescription)")
+      if path.hasSuffix("/jobs") {
+        return Self.response(
+          request,
+          #"{"jobs":[{"id":1,"name":"Passing","conclusion":"success"},{"id":2,"name":"Failing","conclusion":"failure"}]}"#
+        )
+      }
+      if path.hasSuffix("/logs") { return Self.response(request, "log text") }
+      #expect(path.hasSuffix("/rerun-failed-jobs"))
+      #expect(request.httpMethod == "POST")
+      return Self.response(request, "", status: 201)
     }
-
-    let snapshot = await probe.snapshot()
-    #expect(snapshot.loginCallCount == 1)
+    try await client.close(root: Self.root, remote: Self.remote, number: 42)
+    #expect(try await client.diff(remote: Self.remote, number: 42) == "diff --git a/file b/file\n")
+    #expect(try await client.latestRun(root: Self.root, branch: "a & b")?.databaseId == 12)
+    try await client.rerun(root: Self.root, runID: 12)
+    #expect(try await client.logs(root: Self.root, runID: 12, failedOnly: true) == "Failing\nlog text")
+    #expect(!paths.value.contains("/repos/owner/repo/actions/jobs/1/logs"))
+    #expect(try await client.logs(root: Self.root, runID: 12, failedOnly: false).contains("Passing\nlog text"))
   }
 
-  @Test func batchPullRequestsRetriesOnGatewayTimeoutOnce() async throws {
-    let probe = GithubBatchShellProbe()
-    let shell = ShellClient(
-      run: { executableURL, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          await probe.recordWhichCall()
-          return ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0)
-        }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { executableURL, arguments, _, _ in
-        guard executableURL.lastPathComponent == "gh" else {
-          return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-        }
-        await probe.recordLoginCall()
-        let callIndex = await probe.beginGhCall()
-        if callIndex == 1 {
-          await probe.endGhCall()
-          throw ShellClientError(
-            command: "gh api graphql",
-            stdout: "",
-            stderr: "gh: HTTP 504",
-            exitCode: 1
-          )
-        }
-        let stdout = graphQLResponse(for: arguments)
-        await probe.endGhCall()
-        return ShellOutput(stdout: stdout, stderr: "", exitCode: 0)
-      }
-    )
-    let client = GithubCLIClient.live(shell: shell)
-    let branches = (0..<5).map { "feature-\($0)" }
+  @Test func resolvesForkToBaseRepositoryWithoutGhRepoView() async {
+    let client = Self.api { request in
+      Self.response(
+        request, #"{"name":"fork","owner":{"login":"me"},"parent":{"name":"base","owner":{"login":"upstream"}}}"#)
+    }
+    #expect(
+      await client.resolveRemoteInfo(root: Self.root)
+        == GithubRemoteInfo(host: "github.com", owner: "upstream", repo: "base"))
+  }
 
-    let result = try await withDependencies {
+  @Test func enterpriseEndpointsAndCredentialsStayOnTheirHost() async throws {
+    let calls = LockIsolated<[[String]]>([])
+    let client = Self.api(
+      { request in
+        #expect(request.url?.host == "github.example.com")
+        #expect(request.url?.path == "/api/v3/repos/team/repo/pulls/1")
+        return Self.response(request, "diff")
+      }, credentials: Self.credentials(calls: calls))
+    _ = try await client.diff(
+      remote: GithubRemoteInfo(host: "github.example.com", owner: "team", repo: "repo"), number: 1)
+    #expect(calls.value.last?.last == "github.example.com")
+    #expect(try GithubAPIClient.url(host: "github.example.com", path: "", graphQL: true).path == "/api/graphql")
+  }
+
+  @Test func unauthorizedResponseRefreshesTheGhTokenOnce() async throws {
+    let count = LockIsolated(0)
+    let calls = LockIsolated<[[String]]>([])
+    let client = Self.api(
+      { request in
+        let attempt = count.withValue {
+          $0 += 1
+          return $0
+        }
+        return Self.response(request, attempt == 1 ? "{}" : "diff", status: attempt == 1 ? 401 : 200)
+      }, credentials: Self.credentials(calls: calls))
+    #expect(try await client.diff(remote: Self.remote, number: 1) == "diff")
+    #expect(calls.value.count == 2)
+  }
+
+  @Test(.dependencies) func batchRequestsDeduplicateEscapeAndRetryOldEnterpriseFields() async throws {
+    let count = LockIsolated(0)
+    let client = Self.api { request in
+      let attempt = count.withValue {
+        $0 += 1
+        return $0
+      }
+      let query = try #require(Self.body(request)["query"] as? String)
+      #expect(query.contains(#"headRefName: "feature\"name""#))
+      #expect(!query.contains("branch1:"))
+      if attempt == 1 {
+        return Self.response(
+          request, #"{"errors":[{"message":"Field 'isMergeQueueEnabled' doesn't exist on type 'PullRequest'"}]}"#)
+      }
+      #expect(!query.contains("isMergeQueueEnabled"))
+      return Self.response(request, #"{"data":{"repository":{"branch0":{"nodes":[]}}}}"#)
+    }
+    #expect(
+      try await client.batchPullRequests(
+        host: "github.com", owner: "owner", repo: "repo", branches: ["feature\"name", "feature\"name", ""]
+      ).isEmpty)
+    #expect(count.value == 2)
+  }
+
+  @Test(.dependencies) func batchGatewayRetryIsBounded() async {
+    let count = LockIsolated(0)
+    let client = Self.api { request in
+      count.withValue { $0 += 1 }
+      return Self.response(request, "gateway timeout", status: 504)
+    }
+    await withDependencies {
       $0.continuousClock = ImmediateClock()
     } operation: {
-      try await client.batchPullRequests("github.com", "khoi", "repo", branches)
+      await #expect(throws: GithubCLIError.gatewayTimeout) {
+        try await client.batchPullRequests(host: "github.com", owner: "owner", repo: "repo", branches: ["feature"])
+      }
     }
-
-    #expect(result.isEmpty)
-    let snapshot = await probe.snapshot()
-    #expect(snapshot.loginCallCount == 2)
+    #expect(count.value == 2)
   }
 
-  @Test func batchPullRequestsPropagatesGatewayTimeoutAfterOneRetry() async {
-    // The retry-once contract: a second consecutive 504 must surface as a
-    // `.gatewayTimeout` error rather than spinning forever.
-    let probe = GithubBatchShellProbe()
-    let shell = ShellClient(
-      run: { executableURL, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          await probe.recordWhichCall()
-          return ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0)
-        }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { executableURL, _, _, _ in
-        guard executableURL.lastPathComponent == "gh" else {
-          return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-        }
-        await probe.recordLoginCall()
-        _ = await probe.beginGhCall()
-        await probe.endGhCall()
-        throw ShellClientError(command: "gh api graphql", stdout: "", stderr: "gh: HTTP 504", exitCode: 1)
-      }
-    )
-    let client = GithubCLIClient.live(shell: shell)
-    let branches = (0..<5).map { "feature-\($0)" }
-
-    do {
-      _ = try await withDependencies {
-        $0.continuousClock = ImmediateClock()
-      } operation: {
-        try await client.batchPullRequests("github.com", "khoi", "repo", branches)
-      }
-      Issue.record("Expected batchPullRequests to throw after two 504s")
-    } catch GithubCLIError.gatewayTimeout {
-      // Expected.
-    } catch {
-      Issue.record("Unexpected error type: \(error.localizedDescription)")
-    }
-
-    let snapshot = await probe.snapshot()
-    #expect(snapshot.loginCallCount == 2)
-  }
-
-  @Test func batchPullRequestsDeduplicatesBeforeChunking() async throws {
-    let probe = GithubBatchShellProbe()
-    let shell = ShellClient(
-      run: { executableURL, arguments, _ in
-        if executableURL.lastPathComponent == "which" {
-          await probe.recordWhichCall()
-          return ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0)
-        }
-        _ = arguments
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { executableURL, arguments, _, _ in
-        guard executableURL.lastPathComponent == "gh" else {
-          return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-        }
-        await probe.recordLoginCall()
-        _ = await probe.beginGhCall()
-        let stdout = graphQLResponse(for: arguments)
-        await probe.endGhCall()
-        return ShellOutput(stdout: stdout, stderr: "", exitCode: 0)
-      }
-    )
-    let client = GithubCLIClient.live(shell: shell)
-    let uniqueBranches = (0..<30).map { "feature-\($0)" }
-    let branches = uniqueBranches + ["feature-0", "feature-1", "feature-2", "", ""]
-
-    let result = try await client.batchPullRequests("github.com", "khoi", "repo", branches)
-
-    #expect(result.isEmpty)
-    let snapshot = await probe.snapshot()
-    #expect(snapshot.ghCallCount == 6)
-    #expect(snapshot.whichCallCount == 1)
-    #expect(snapshot.loginCallCount == 6)
-  }
-
-  @Test func resolveRemoteInfoUsesGhRepoViewAndParsesHost() async {
-    let shell = ShellClient(
-      run: { executableURL, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          return ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0)
-        }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { executableURL, arguments, _, _ in
-        guard executableURL.lastPathComponent == "gh" else {
-          return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-        }
-        #expect(arguments == ["repo", "view", "--json", "owner,name,url"])
-        let stdout = """
-          {"name":"upstream-repo","owner":{"login":"upstream-org"},\
-          "url":"https://github.com/upstream-org/upstream-repo"}
-          """
-        return ShellOutput(stdout: stdout, stderr: "", exitCode: 0)
-      }
-    )
-    let client = GithubCLIClient.live(shell: shell)
-
-    let info = await client.resolveRemoteInfo(URL(fileURLWithPath: "/tmp/repo"))
-
-    #expect(info == GithubRemoteInfo(host: "github.com", owner: "upstream-org", repo: "upstream-repo"))
-  }
-
-  @Test func resolveRemoteInfoReturnsNilWhenGhFails() async {
-    let shell = ShellClient(
-      run: { executableURL, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          return ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0)
-        }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { _, _, _, _ in
-        throw ShellClientError(command: "gh repo view", stdout: "", stderr: "nope", exitCode: 1)
-      }
-    )
-    let client = GithubCLIClient.live(shell: shell)
-
-    let info = await client.resolveRemoteInfo(URL(fileURLWithPath: "/tmp/repo"))
-
-    #expect(info == nil)
-  }
-
-  @Test func mergePullRequestForwardsRepoSlugWhenRemoteProvided() async throws {
-    let recordedArguments = LockIsolated<[[String]]>([])
-    let shell = ShellClient(
-      run: { executableURL, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          return ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0)
-        }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { executableURL, arguments, _, _ in
-        guard executableURL.lastPathComponent == "gh" else {
-          return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-        }
-        recordedArguments.withValue { $0.append(arguments) }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      }
-    )
-    let client = GithubCLIClient.live(shell: shell)
-    let remote = GithubRemoteInfo(host: "github.com", owner: "upstream-org", repo: "upstream-repo")
-
-    try await client.mergePullRequest(URL(fileURLWithPath: "/tmp/fork"), remote, 42, .squash)
-
+  @Test func credentialsParseHostsWithoutReadingTokensAsHosts() {
     #expect(
-      recordedArguments.value == [
-        ["pr", "merge", "42", "--squash", "--repo", "github.com/upstream-org/upstream-repo"]
-      ]
-    )
+      GithubCredentials.hosts(in: "github.com:\n  oauth_token: secret\ngithub.example.com:\n  users:\n") == [
+        "github.com", "github.example.com",
+      ])
   }
-
-  @Test func mergePullRequestOmitsRepoFlagWhenRemoteMissing() async throws {
-    let recordedArguments = LockIsolated<[[String]]>([])
-    let shell = ShellClient(
-      run: { executableURL, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          return ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0)
-        }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { executableURL, arguments, _, _ in
-        guard executableURL.lastPathComponent == "gh" else {
-          return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-        }
-        recordedArguments.withValue { $0.append(arguments) }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      }
-    )
-    let client = GithubCLIClient.live(shell: shell)
-
-    try await client.mergePullRequest(URL(fileURLWithPath: "/tmp/fork"), nil, 42, .squash)
-
-    #expect(recordedArguments.value == [["pr", "merge", "42", "--squash"]])
-  }
-
-  @Test func closePullRequestForwardsRepoSlug() async throws {
-    let recordedArguments = LockIsolated<[[String]]>([])
-    let shell = ShellClient(
-      run: { executableURL, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          return ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0)
-        }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { executableURL, arguments, _, _ in
-        guard executableURL.lastPathComponent == "gh" else {
-          return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-        }
-        recordedArguments.withValue { $0.append(arguments) }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      }
-    )
-    let client = GithubCLIClient.live(shell: shell)
-    let remote = GithubRemoteInfo(host: "ghe.acme.com", owner: "team", repo: "repo")
-
-    try await client.closePullRequest(URL(fileURLWithPath: "/tmp/fork"), remote, 7)
-
-    #expect(recordedArguments.value == [["pr", "close", "7", "--repo", "ghe.acme.com/team/repo"]])
-  }
-
-  @Test func markPullRequestReadyForwardsRepoSlug() async throws {
-    let recordedArguments = LockIsolated<[[String]]>([])
-    let shell = ShellClient(
-      run: { executableURL, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          return ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0)
-        }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { executableURL, arguments, _, _ in
-        guard executableURL.lastPathComponent == "gh" else {
-          return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-        }
-        recordedArguments.withValue { $0.append(arguments) }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      }
-    )
-    let client = GithubCLIClient.live(shell: shell)
-    let remote = GithubRemoteInfo(host: "github.com", owner: "owner", repo: "repo")
-
-    try await client.markPullRequestReady(URL(fileURLWithPath: "/tmp/fork"), remote, 13)
-
-    #expect(recordedArguments.value == [["pr", "ready", "13", "--repo", "github.com/owner/repo"]])
-  }
-
-  @Test func executableResolutionIsSingleFlightAndReused() async {
-    let probe = GithubBatchShellProbe()
-    let shell = ShellClient(
-      run: { executableURL, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          await probe.recordWhichCall()
-          return ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0)
-        }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { executableURL, _, _, _ in
-        guard executableURL.lastPathComponent == "gh" else {
-          return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-        }
-        await probe.recordLoginCall()
-        _ = await probe.beginGhCall()
-        await probe.endGhCall()
-        return ShellOutput(stdout: "gh version 2.79.0", stderr: "", exitCode: 0)
-      }
-    )
-    let client = GithubCLIClient.live(shell: shell)
-
-    let first = await client.isAvailable()
-    let second = await client.isAvailable()
-
-    #expect(first)
-    #expect(second)
-    let snapshot = await probe.snapshot()
-    #expect(snapshot.whichCallCount == 1)
-    #expect(snapshot.ghCallCount == 2)
-    #expect(snapshot.loginCallCount == 2)
-  }
-
-  @Test func executableResolutionFallsBackToCommonInstallPathWhenShellPathMissesGh() async throws {
-    let fallbackDirectory = URL(fileURLWithPath: NSTemporaryDirectory())
-      .appendingPathComponent("supacode-gh-fallback-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: fallbackDirectory, withIntermediateDirectories: true)
-    defer {
-      try? FileManager.default.removeItem(at: fallbackDirectory)
-    }
-    let fallbackGh = fallbackDirectory.appendingPathComponent("gh")
-    let created = FileManager.default.createFile(
-      atPath: fallbackGh.path,
-      contents: Data("#!/bin/sh\n".utf8),
-      attributes: [.posixPermissions: 0o755]
-    )
-    #expect(created)
-
-    let probe = GithubBatchShellProbe()
-    let shell = ShellClient(
-      run: { executableURL, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          await probe.recordWhichCall()
-          throw ShellClientError(command: "which gh", stdout: "", stderr: "gh not found", exitCode: 1)
-        }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { executableURL, arguments, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          await probe.recordWhichCall()
-          throw ShellClientError(command: "which gh", stdout: "", stderr: "gh not found", exitCode: 1)
-        }
-        #expect(executableURL == fallbackGh)
-        #expect(arguments == ["--version"])
-        await probe.recordLoginCall()
-        return ShellOutput(stdout: "gh version 2.79.0", stderr: "", exitCode: 0)
-      }
-    )
-    let client = GithubCLIClient.live(shell: shell, fallbackExecutableURLs: [fallbackGh])
-
-    #expect(await client.isAvailable())
-
-    let snapshot = await probe.snapshot()
-    #expect(snapshot.whichCallCount == 2)
-    #expect(snapshot.loginCallCount == 1)
-  }
-
-  @Test func executableResolutionReportsUnavailableWhenNoFallbackPathResolves() async throws {
-    let probe = GithubBatchShellProbe()
-    let shell = ShellClient(
-      run: { executableURL, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          await probe.recordWhichCall()
-          throw ShellClientError(command: "which gh", stdout: "", stderr: "gh not found", exitCode: 1)
-        }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { executableURL, _, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          await probe.recordWhichCall()
-          throw ShellClientError(command: "which gh", stdout: "", stderr: "gh not found", exitCode: 1)
-        }
-        await probe.recordLoginCall()
-        return ShellOutput(stdout: "gh version 2.79.0", stderr: "", exitCode: 0)
-      }
-    )
-    let missingGh = URL(fileURLWithPath: NSTemporaryDirectory())
-      .appendingPathComponent("supacode-gh-missing-\(UUID().uuidString)/gh")
-    let client = GithubCLIClient.live(shell: shell, fallbackExecutableURLs: [missingGh])
-
-    #expect(await client.isAvailable() == false)
-
-    let snapshot = await probe.snapshot()
-    #expect(snapshot.whichCallCount == 2)
-    #expect(snapshot.loginCallCount == 0)
-  }
-
-  @Test func executableResolutionPicksFirstExecutableFallbackAndSkipsMisses() async throws {
-    let fallbackDirectory = URL(fileURLWithPath: NSTemporaryDirectory())
-      .appendingPathComponent("supacode-gh-order-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: fallbackDirectory, withIntermediateDirectories: true)
-    defer {
-      try? FileManager.default.removeItem(at: fallbackDirectory)
-    }
-    let missingGh = fallbackDirectory.appendingPathComponent("missing/gh")
-    let nonExecutableGh = fallbackDirectory.appendingPathComponent("non-executable-gh")
-    #expect(
-      FileManager.default.createFile(
-        atPath: nonExecutableGh.path,
-        contents: Data("#!/bin/sh\n".utf8),
-        attributes: [.posixPermissions: 0o644]
-      )
-    )
-    let firstExecutableGh = fallbackDirectory.appendingPathComponent("first-gh")
-    let laterExecutableGh = fallbackDirectory.appendingPathComponent("later-gh")
-    for executable in [firstExecutableGh, laterExecutableGh] {
-      #expect(
-        FileManager.default.createFile(
-          atPath: executable.path,
-          contents: Data("#!/bin/sh\n".utf8),
-          attributes: [.posixPermissions: 0o755]
-        )
-      )
-    }
-
-    let shell = ShellClient(
-      run: { executableURL, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          throw ShellClientError(command: "which gh", stdout: "", stderr: "gh not found", exitCode: 1)
-        }
-        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { executableURL, _, _, _ in
-        if executableURL.lastPathComponent == "which" {
-          throw ShellClientError(command: "which gh", stdout: "", stderr: "gh not found", exitCode: 1)
-        }
-        // First executable entry wins: missing and non-executable candidates are skipped.
-        #expect(executableURL == firstExecutableGh)
-        return ShellOutput(stdout: "gh version 2.79.0", stderr: "", exitCode: 0)
-      }
-    )
-    let client = GithubCLIClient.live(
-      shell: shell,
-      fallbackExecutableURLs: [missingGh, nonExecutableGh, firstExecutableGh, laterExecutableGh]
-    )
-
-    #expect(await client.isAvailable())
-  }
-
-  @Test func defaultFallbackExecutableURLsOrdersPathsAndDropsHomeWhenAbsent() {
-    let withHome = ForgeCLIExecutableResolver.defaultFallbackExecutableURLs(
-      executableName: "gh",
-      environment: ["HOME": "/Users/tester"]
-    )
-    #expect(
-      withHome.map(\.path) == [
-        "/opt/homebrew/bin/gh",
-        "/usr/local/bin/gh",
-        "/Users/tester/.local/bin/gh",
-      ]
-    )
-
-    let withoutHome = ForgeCLIExecutableResolver.defaultFallbackExecutableURLs(
-      executableName: "gh",
-      environment: [:]
-    )
-    #expect(
-      withoutHome.map(\.path) == [
-        "/opt/homebrew/bin/gh",
-        "/usr/local/bin/gh",
-      ]
-    )
-  }
-
-  // MARK: - Noisy login-shell output (#377)
-
-  // A ShellClient that resolves `gh` via `which` and returns `stdout` for every gh invocation.
-  static func ghShell(stdout: String) -> ShellClient {
-    ShellClient(
-      run: { executableURL, _, _ in
-        executableURL.lastPathComponent == "which"
-          ? ShellOutput(stdout: "/usr/bin/gh", stderr: "", exitCode: 0)
-          : ShellOutput(stdout: "", stderr: "", exitCode: 0)
-      },
-      runLoginImpl: { executableURL, _, _, _ in
-        guard executableURL.lastPathComponent == "gh" else {
-          return ShellOutput(stdout: "", stderr: "", exitCode: 0)
-        }
-        return ShellOutput(stdout: stdout, stderr: "", exitCode: 0)
-      }
-    )
-  }
-
   @Test func balancedSpansReturnsCleanObjectUnchanged() {
     #expect(GithubCLIOutput.balancedJSONSpans(in: #"{"a":1}"#).map(String.init) == [#"{"a":1}"#])
   }
@@ -884,172 +560,4 @@ struct GithubCLIClientTests {
     #expect(active?.login == "ann")
   }
 
-  @Test func authStatusSucceedsDespiteBannerPollutedStdout() async throws {
-    let stdout =
-      "╭─ fastfetch ─╮\n│ os macOS    │\n╰─────────────╯\n"
-      + #"{"hosts":{"github.com":[{"state":"success","active":true,"host":"github.com","login":"sbertix"}]}}"#
-    let client = GithubCLIClient.live(shell: Self.ghShell(stdout: stdout))
-
-    let status = try await client.authStatus()
-
-    #expect(status == GithubAuthStatus(username: "sbertix", host: "github.com"))
-  }
-
-  @Test func authStatusReportsActiveAccountOnNonFirstHost() async throws {
-    let stdout = #"""
-      {"hosts":{"ghe.acme.com":[{"active":false,"login":"work"}],"github.com":[{"active":true,"login":"sbertix"}]}}
-      """#
-    let client = GithubCLIClient.live(shell: Self.ghShell(stdout: stdout))
-
-    let status = try await client.authStatus()
-
-    #expect(status == GithubAuthStatus(username: "sbertix", host: "github.com"))
-  }
-
-  @Test func authStatusThrowsCommandFailedOnNonJsonOutput() async {
-    let client = GithubCLIClient.live(shell: Self.ghShell(stdout: "command not found: gh"))
-
-    do {
-      _ = try await client.authStatus()
-      Issue.record("Expected authStatus to throw")
-    } catch GithubCLIError.commandFailed(let message) {
-      // No JSON payload -> the shell-pollution hypothesis, not a raw error.
-      #expect(message == GithubCLIOutput.noPayloadMessage)
-    } catch {
-      Issue.record("Unexpected error type: \(error.localizedDescription)")
-    }
-  }
-
-  @Test func authStatusThrowsUndecodableMessageWhenPayloadParsesButSchemaDiffers() async {
-    let client = GithubCLIClient.live(shell: Self.ghShell(stdout: #"{"unexpected":true}"#))
-
-    do {
-      _ = try await client.authStatus()
-      Issue.record("Expected authStatus to throw")
-    } catch GithubCLIError.commandFailed(let message) {
-      // Found JSON but it failed to decode -> the version-incompatibility hypothesis.
-      #expect(message == GithubCLIOutput.undecodableMessage)
-    } catch {
-      Issue.record("Unexpected error type: \(error.localizedDescription)")
-    }
-  }
-
-  @Test func resolveRemoteInfoSucceedsDespiteBannerPollutedStdout() async {
-    let stdout =
-      "loading shell profile…\n"
-      + #"{"name":"upstream-repo","owner":{"login":"upstream-org"},"#
-      + #""url":"https://github.com/upstream-org/upstream-repo"}"#
-    let client = GithubCLIClient.live(shell: Self.ghShell(stdout: stdout))
-
-    let info = await client.resolveRemoteInfo(URL(fileURLWithPath: "/tmp/repo"))
-
-    #expect(info == GithubRemoteInfo(host: "github.com", owner: "upstream-org", repo: "upstream-repo"))
-  }
-
-  @Test func latestRunSucceedsDespiteBannerPollutedArray() async throws {
-    let stdout =
-      "pyenv: version 3.12\n"
-      + #"[{"databaseId":7,"workflowName":"CI","name":"CI","displayTitle":"Fix","#
-      + #""status":"completed","conclusion":"success","#
-      + #""createdAt":"2026-05-01T00:00:00Z","updatedAt":"2026-05-01T00:00:00Z"}]"#
-    let client = GithubCLIClient.live(shell: Self.ghShell(stdout: stdout))
-
-    let run = try await client.latestRun(URL(fileURLWithPath: "/tmp/repo"), "main")
-
-    #expect(run?.databaseId == 7)
-    #expect(run?.conclusion == "success")
-  }
-
-  @Test func latestRunReturnsNilForEmptyOutput() async throws {
-    let client = GithubCLIClient.live(shell: Self.ghShell(stdout: ""))
-
-    let run = try await client.latestRun(URL(fileURLWithPath: "/tmp/repo"), "main")
-
-    #expect(run == nil)
-  }
-
-  @Test func latestRunReturnsNilForBannerWithNoRuns() async throws {
-    // Banner-only stdout with no JSON payload means no runs, not a parse failure.
-    let client = GithubCLIClient.live(shell: Self.ghShell(stdout: "shell banner with no json"))
-
-    let run = try await client.latestRun(URL(fileURLWithPath: "/tmp/repo"), "main")
-
-    #expect(run == nil)
-  }
-
-  @Test func latestRunThrowsCommandFailedOnPresentButUndecodablePayload() async {
-    let client = GithubCLIClient.live(shell: Self.ghShell(stdout: #"[{"databaseId":"not-an-int"}]"#))
-
-    do {
-      _ = try await client.latestRun(URL(fileURLWithPath: "/tmp/repo"), "main")
-      Issue.record("Expected latestRun to throw on a present-but-undecodable payload")
-    } catch GithubCLIError.commandFailed {
-      // Expected: a JSON payload that fails to decode is a real parse failure.
-    } catch {
-      Issue.record("Unexpected error type: \(error.localizedDescription)")
-    }
-  }
-
-  @Test func latestRunSkipsStrayBraceBannerBeforeRunArray() async throws {
-    // A stray unbalanced brace (e.g. a `set -x` trace) must not swallow the real run array.
-    let stdout = "+ chpwd () {\n" + #"[{"databaseId":11,"status":"completed"}]"#
-    let client = GithubCLIClient.live(shell: Self.ghShell(stdout: stdout))
-
-    let run = try await client.latestRun(URL(fileURLWithPath: "/tmp/repo"), "main")
-
-    #expect(run?.databaseId == 11)
-  }
-
-  @Test func latestRunPrefersRealArrayOverLeadingEmptyArrayBanner() async throws {
-    // A leading `[]` from shell noise must not shadow the real run list that follows.
-    let stdout = "[]\n" + #"[{"databaseId":9,"status":"completed","conclusion":"success"}]"#
-    let client = GithubCLIClient.live(shell: Self.ghShell(stdout: stdout))
-
-    let run = try await client.latestRun(URL(fileURLWithPath: "/tmp/repo"), "main")
-
-    #expect(run?.databaseId == 9)
-  }
-
-  @Test func authStatusReportsPollutionForBracketNoiseWithoutValidJson() async {
-    // Brackets that are not valid JSON (e.g. `[INFO]` log prefixes) are shell noise, not schema drift.
-    let client = GithubCLIClient.live(shell: Self.ghShell(stdout: "[INFO] starting up\n[WARN] no config"))
-
-    do {
-      _ = try await client.authStatus()
-      Issue.record("Expected authStatus to throw")
-    } catch GithubCLIError.commandFailed(let message) {
-      #expect(message == GithubCLIOutput.noPayloadMessage)
-    } catch {
-      Issue.record("Unexpected error type: \(error.localizedDescription)")
-    }
-  }
-}
-
-nonisolated private func graphQLResponse(for arguments: [String]) -> String {
-  guard let queryArgument = arguments.first(where: { $0.hasPrefix("query=") }) else {
-    return #"{"data":{"repository":{}}}"#
-  }
-  let query = String(queryArgument.dropFirst("query=".count))
-  let aliases = queryAliases(from: query)
-  let entries = aliases.map { #""\#($0)":{"nodes":[]}"# }.joined(separator: ",")
-  return #"{"data":{"repository":{\#(entries)}}}"#
-}
-
-nonisolated private func queryAliases(from query: String) -> [String] {
-  guard let regex = try? NSRegularExpression(pattern: #"branch\d+"#) else {
-    return []
-  }
-  let range = NSRange(query.startIndex..<query.endIndex, in: query)
-  var seen = Set<String>()
-  var aliases: [String] = []
-  for match in regex.matches(in: query, range: range) {
-    guard let aliasRange = Range(match.range, in: query) else {
-      continue
-    }
-    let alias = String(query[aliasRange])
-    if seen.insert(alias).inserted {
-      aliases.append(alias)
-    }
-  }
-  return aliases
 }

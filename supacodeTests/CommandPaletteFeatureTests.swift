@@ -824,6 +824,20 @@ struct CommandPaletteFeatureTests {
     #expect(ordered.first?.title == "Merge PR")
   }
 
+  @Test func commandPaletteLabelsAutoMergeAndKeepsPendingRequestsOpen() {
+    let rootPath = "/tmp/repo"
+    let worktree = makeWorktree(id: "\(rootPath)/feature", name: "feature", repoRoot: rootPath)
+    let repository = makeRepository(rootPath: rootPath, name: "Repo", worktrees: [worktree])
+    var state = RepositoriesFeature.State(reconciledRepositories: [repository])
+    state.selection = .worktree(worktree.id)
+    var pullRequest = makePullRequest(mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED")
+    pullRequest.mergeAutomation = PullRequestMergeAutomation(canEnable: true)
+    state.setWorktreeInfoForTesting(id: worktree.id, pullRequest: pullRequest)
+    let items = CommandPaletteFeature.commandPaletteItems(from: state)
+    #expect(items.contains { $0.title == "Enable Auto-Merge" })
+    #expect(!items.contains { $0.title == "Merge PR" })
+  }
+
   @Test func commandPaletteShowsCloseActionForOpenPullRequest() {
     let rootPath = "/tmp/repo"
     let worktree = makeWorktree(id: "\(rootPath)/wt-close", name: "close", repoRoot: rootPath)

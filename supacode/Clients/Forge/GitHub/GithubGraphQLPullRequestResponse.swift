@@ -123,9 +123,14 @@ nonisolated struct GithubGraphQLPullRequestResponse: Decodable {
     let mergeQueueEntry: ForgeMergeQueueEntry?
     let headRepository: HeadRepository?
     let latestOpinionatedReviews: ReviewConnection?
+    let autoMergeRequest: AutoMergeRequest?
+    let viewerCanEnableAutoMerge: Bool?
+    let viewerCanDisableAutoMerge: Bool?
+    let isMergeQueueEnabled: Bool?
+    let isInMergeQueue: Bool?
 
     var pullRequest: ForgePullRequest {
-      ForgePullRequest(
+      var result = ForgePullRequest(
         number: number,
         title: title,
         state: state,
@@ -148,6 +153,13 @@ nonisolated struct GithubGraphQLPullRequestResponse: Decodable {
           latestReviewStates: latestOpinionatedReviews?.states ?? []
         )
       )
+      if viewerCanEnableAutoMerge != nil || isMergeQueueEnabled != nil || autoMergeRequest != nil {
+        result.mergeAutomation = PullRequestMergeAutomation(
+          isEnabled: autoMergeRequest != nil, canEnable: viewerCanEnableAutoMerge == true,
+          canDisable: viewerCanDisableAutoMerge == true, usesQueue: isMergeQueueEnabled == true,
+          isQueued: isInMergeQueue == true)
+      }
+      return result
     }
 
     var stateRank: Int {
@@ -161,6 +173,10 @@ nonisolated struct GithubGraphQLPullRequestResponse: Decodable {
       return headRepository.owner.login.lowercased() == owner
         && headRepository.name.lowercased() == repo
     }
+  }
+
+  nonisolated struct AutoMergeRequest: Decodable {
+    let enabledAt: Date?
   }
 
   nonisolated struct CommitConnection: Decodable {

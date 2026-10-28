@@ -206,7 +206,14 @@ private struct RemoteForgeEnvironment: Sendable {
     let shell = ShellClient.ssh(host: host, base: base)
     git = .ssh(host: host, base: base)
     // A local Homebrew path says nothing about the remote host's executables.
-    github = .live(shell: shell, fallbackExecutableURLs: [])
+    github = .live(
+      shell: shell, fallbackExecutableURLs: [], git: git,
+      configuredHosts: {
+        let script =
+          #"printf '%s:\n' "${GH_HOST:-github.com}"; config=${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}; if [ -f "$config/hosts.yml" ]; then grep -E '^[A-Za-z0-9._-]+:$' "$config/hosts.yml"; fi"#
+        let output = try await shell.runLogin(URL(fileURLWithPath: "/bin/sh"), ["-c", script], nil, log: false)
+        return GithubCredentials.hosts(in: output.stdout)
+      }, repositorySelection: { await GithubRepositorySelection.remote(at: $0, shell: shell) })
     gitlab = .live(shell: shell, fallbackExecutableURLs: [], remoteConfiguration: true)
   }
 
@@ -226,8 +233,8 @@ private struct RemoteForgeEnvironment: Sendable {
       resolveProject: { root in await run { await client.resolveProject(root) } },
       fetchSummaries: { project, branches in try await run { try await client.fetchSummaries(project, branches) } },
       fetchDetail: { project, number in try await run { try await client.fetchDetail(project, number) } },
-      mergePullRequest: { root, project, number, strategy in
-        try await run { try await client.mergePullRequest(root, project, number, strategy) }
+      mergePullRequest: { root, project, number, strategy, action in
+        try await run { try await client.mergePullRequest(root, project, number, strategy, action) }
       },
       closePullRequest: { root, project, number in
         try await run { try await client.closePullRequest(root, project, number) }

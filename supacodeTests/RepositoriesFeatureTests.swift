@@ -7680,6 +7680,40 @@ struct RepositoriesFeatureTests {
     await store.finish()
   }
 
+  @Test(.dependencies, arguments: [PullRequestMergeAction.enableAutoMerge, .enqueue, .disableAutoMerge])
+  func mergeAutomationReportsActualOutcomeWithoutMarkingPullRequestMerged(action: PullRequestMergeAction) async {
+    let root = "/tmp/merge-automation"
+    let worktree = makeWorktree(id: "\(root)/feature", name: "feature", repoRoot: root)
+    let repository = makeRepository(id: root, worktrees: [worktree])
+    var pullRequest = makePullRequest(state: .open, headRefName: "feature", number: 42,
+      mergeStateStatus: action == .enqueue ? "CLEAN" : "BLOCKED")
+    pullRequest.mergeAutomation = PullRequestMergeAutomation(
+      isEnabled: action == .disableAutoMerge, canEnable: true, canDisable: true, usesQueue: action == .enqueue)
+    var state = makeState(repositories: [repository])
+    state.reconcileSidebarForTesting()
+    state.setWorktreeInfoForTesting(id: worktree.id, addedLines: nil, removedLines: nil, pullRequest: pullRequest)
+    let outcome: PullRequestMergeOutcome = action == .enqueue ? .queued
+      : action == .disableAutoMerge ? .autoMergeDisabled : .autoMergeEnabled
+    let store = TestStore(initialState: state) { RepositoriesFeature() } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+      $0.githubCLI.mergePullRequest = { _, _, number, _, receivedAction in
+        #expect(number == 42)
+        #expect(receivedAction == action)
+        return outcome
+      }
+    }
+    store.exhaustivity = .off
+    await store.send(.pullRequestAction(worktree.id, .merge))
+    await store.receive(\.showToast)
+    await store.receive(\.showToast) {
+      $0.statusToast = .success(outcome.message)
+    }
+    await store.receive(\.worktreeInfoEvent)
+    #expect(store.state.sidebarItems[id: worktree.id]?.pullRequest?.state == .open)
+    #expect(store.state.archivedWorktreeIDs.isEmpty)
+    await store.finish()
+  }
+
   @Test func pullRequestActionMergeRefreshesImmediatelyWithoutSyntheticMergedState() async {
     let repoRoot = "/tmp/repo"
     let mainWorktree = makeWorktree(id: repoRoot, name: "main", repoRoot: repoRoot)
@@ -7702,8 +7736,9 @@ struct RepositoriesFeatureTests {
     } withDependencies: {
       $0.continuousClock = TestClock()
       $0.githubIntegration.isAvailable = { true }
-      $0.githubCLI.mergePullRequest = { _, _, number, _ in
+      $0.githubCLI.mergePullRequest = { _, _, number, _, _ in
         mergedNumbers.withValue { $0.append(number) }
+        return .merged
       }
     }
     store.exhaustivity = .off
@@ -7920,7 +7955,7 @@ struct RepositoriesFeatureTests {
     } withDependencies: {
       $0.continuousClock = TestClock()
       $0.githubIntegration.isAvailable = { true }
-      $0.githubCLI.mergePullRequest = { _, _, _, _ in }
+      $0.githubCLI.mergePullRequest = { _, _, _, _, _ in .merged }
       $0.githubCLI.resolveRemoteInfo = { _ in
         GithubRemoteInfo(host: "github.com", owner: "upstream", repo: "project")
       }
@@ -8040,8 +8075,9 @@ struct RepositoriesFeatureTests {
       $0.githubCLI.resolveRemoteInfo = { _ in
         GithubRemoteInfo(host: "github.com", owner: "upstream", repo: "project")
       }
-      $0.githubCLI.mergePullRequest = { _, remote, _, _ in
+      $0.githubCLI.mergePullRequest = { _, remote, _, _, _ in
         recordedRemote.withValue { $0 = remote }
+        return .merged
       }
     }
     store.exhaustivity = .off
@@ -8080,8 +8116,9 @@ struct RepositoriesFeatureTests {
       $0.gitClient.remoteInfo = { _ in
         GithubRemoteInfo(host: "github.com", owner: "fork", repo: "project")
       }
-      $0.githubCLI.mergePullRequest = { _, remote, _, _ in
+      $0.githubCLI.mergePullRequest = { _, remote, _, _, _ in
         recordedRemote.withValue { $0 = remote }
+        return .merged
       }
     }
     store.exhaustivity = .off
@@ -10602,7 +10639,8 @@ struct RepositoriesFeatureTests {
     state: PullRequestState,
     headRefName: String? = nil,
     number: Int = 1,
-    mergedAt: Date? = nil
+    mergedAt: Date? = nil,
+    mergeStateStatus: String? = nil
   ) -> ForgePullRequest {
     ForgePullRequest(
       number: number,
@@ -10613,7 +10651,7 @@ struct RepositoriesFeatureTests {
       isDraft: false,
       reviewDecision: nil,
       mergeable: nil,
-      mergeStateStatus: nil,
+      mergeStateStatus: mergeStateStatus,
       updatedAt: nil,
       mergedAt: mergedAt,
       url: "https://example.com/pull/\(number)",

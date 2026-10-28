@@ -32,10 +32,12 @@ extension ForgeClient {
         @Dependency(GitLabCLIClient.self) var gitlabCLI
         return try await gitlabCLI.fetchMergeRequestDetail(project.host, project.path, number)
       },
-      mergePullRequest: { worktreeRoot, project, number, strategy in
+      mergePullRequest: { worktreeRoot, project, number, strategy, action in
+        guard action == .merge else { throw ForgeClientError.unsupported(operation: "auto-merge") }
         @Dependency(GitLabCLIClient.self) var gitlabCLI
         let project = try requireGitLabProject(project)
         try await gitlabCLI.mergeMergeRequest(worktreeRoot, project.host, project.path, number, strategy)
+        return .merged
       },
       closePullRequest: { worktreeRoot, project, number in
         @Dependency(GitLabCLIClient.self) var gitlabCLI
