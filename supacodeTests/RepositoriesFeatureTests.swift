@@ -10462,7 +10462,7 @@ struct RepositoriesFeatureTests {
     #expect(store.state.statusToast == nil)
   }
 
-  @Test func openSelectedWorktreePullRequestSkipsRemoteWorktree() async {
+  @Test func openSelectedWorktreePullRequestQueriesRemoteWorktree() async {
     let repoRoot = "/tmp/repo"
     let mainWorktree = makeWorktree(id: repoRoot, name: "main", repoRoot: repoRoot)
     let featureWorktree = makeWorktree(id: "\(repoRoot)/feature", name: "feature", repoRoot: repoRoot)
@@ -10479,21 +10479,37 @@ struct RepositoriesFeatureTests {
     state.githubIntegrationAvailability = .available
 
     let clock = TestClock()
+    let queried = LockIsolated<[String]>([])
     let store = TestStore(initialState: state) {
       RepositoriesFeature()
     } withDependencies: {
       $0.continuousClock = clock
-      $0.githubCLI.batchPullRequests = { _, _, _, _ in
-        Issue.record("A remote repository has no local checkout for `gh` to query.")
-        return [:]
+      $0[ForgeRegistry.self].resolveForgeID = { root, host in
+        #expect(root.path == repoRoot)
+        #expect(host == RemoteHost(alias: "devbox"))
+        return .github
+      }
+      $0[ForgeRegistry.self].client = { _ in
+        var forge = ForgeClient.github
+        forge.resolveProject = { _ in
+          ForgeProjectRef(forgeID: .github, host: "github.com", pathSegments: ["owner", "repo"])
+        }
+        forge.fetchSummaries = { project, branches in
+          #expect(project.path == "owner/repo")
+          queried.withValue { $0.append(contentsOf: branches) }
+          return [:]
+        }
+        return forge
       }
     }
     store.exhaustivity = .off
 
     await store.send(.openSelectedWorktreePullRequest)
+    await store.receive(\.pullRequestOpenFetchLoaded)
     await store.receive(\.showToast)
 
-    #expect(store.state.statusToast == .info("Pull requests aren't available for remote repositories."))
+    #expect(queried.value == ["feature"])
+    #expect(store.state.statusToast == .info("No pull request found for this worktree."))
     #expect(store.state.inFlightPullRequestOpenFetchWorktreeIDs.isEmpty)
 
     await clock.advance(by: .seconds(3))

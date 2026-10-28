@@ -14,8 +14,13 @@ struct ForgeRegistry: Sendable {
 /// user actions, the sweep itself) don't spawn an auth-status or git process
 /// per call.
 private actor ForgeResolutionCache {
-  private var hostsByForge: [ForgeID: (hosts: Set<String>, fetchedAt: ContinuousClock.Instant)] = [:]
-  private var remoteHostsByRepo: [URL: (host: String?, fetchedAt: ContinuousClock.Instant)] = [:]
+  private struct AuthKey: Hashable {
+    let forgeID: ForgeID
+    let host: RemoteHost?
+  }
+
+  private var hostsByForge: [AuthKey: (hosts: Set<String>, fetchedAt: ContinuousClock.Instant)] = [:]
+  private var remoteHostsByRepo: [RepositorySettingsKeyID: (host: String?, fetchedAt: ContinuousClock.Instant)] = [:]
   private let ttl: Duration = .seconds(30)
   // Nil can mean either "no remote" or a transient git failure; keep it long
   // enough to spare the sweep, short enough that a fixed remote is picked up.
@@ -24,27 +29,31 @@ private actor ForgeResolutionCache {
 
   func authenticatedHosts(
     for forgeID: ForgeID,
+    host: RemoteHost?,
     fetch: @Sendable () async throws -> Set<String>
   ) async -> Set<String> {
-    if let cached = hostsByForge[forgeID], cached.fetchedAt.duration(to: clock.now) < ttl {
+    let key = AuthKey(forgeID: forgeID, host: host)
+    if let cached = hostsByForge[key], cached.fetchedAt.duration(to: clock.now) < ttl {
       return cached.hosts
     }
     do {
       let hosts = try await fetch()
-      hostsByForge[forgeID] = (hosts, clock.now)
+      hostsByForge[key] = (hosts, clock.now)
       return hosts
     } catch {
       // A transient failure must not pin an empty host set for a full TTL.
       SupaLogger("ForgeRegistry").warning("Authenticated-hosts read failed for \(forgeID.rawValue): \(error)")
-      return hostsByForge[forgeID]?.hosts ?? []
+      return hostsByForge[key]?.hosts ?? []
     }
   }
 
   func remoteHost(
     for rootURL: URL,
+    host: RemoteHost?,
     fetch: @Sendable () async -> String?
   ) async -> String? {
-    if let cached = remoteHostsByRepo[rootURL] {
+    let key = RepositorySettingsKey(rootURL: rootURL, host: host).id
+    if let cached = remoteHostsByRepo[key] {
       let age = cached.fetchedAt.duration(to: clock.now)
       if age < (cached.host == nil ? negativeTTL : ttl) {
         return cached.host
@@ -54,7 +63,7 @@ private actor ForgeResolutionCache {
     if host?.isEmpty == true {
       host = nil
     }
-    remoteHostsByRepo[rootURL] = (host, clock.now)
+    remoteHostsByRepo[key] = (host, clock.now)
     return host
   }
 }
@@ -142,7 +151,7 @@ nonisolated extension ForgeRegistry: DependencyKey {
     }
 
     @Dependency(GitClientDependency.self) var gitClient
-    let remoteHost = await forgeResolutionCache.remoteHost(for: rootURL) {
+    let remoteHost = await forgeResolutionCache.remoteHost(for: rootURL, host: host) {
       await gitClient.gitRemote(rootURL)?.host
     }
     guard let remoteHost = remoteHost?.lowercased(), !remoteHost.isEmpty else { return nil }
@@ -158,7 +167,7 @@ nonisolated extension ForgeRegistry: DependencyKey {
     @Dependency(GitLabCLIClient.self) var gitlabCLI
     var candidates: [ForgeResolver.Candidate] = []
     for forgeID in enabledForgeIDs {
-      let hosts = await forgeResolutionCache.authenticatedHosts(for: forgeID) {
+      let hosts = await forgeResolutionCache.authenticatedHosts(for: forgeID, host: host) {
         switch forgeID {
         case .github: try await githubCLI.authenticatedHosts()
         case .gitlab: await gitlabCLI.authenticatedHosts()
@@ -168,5 +177,70 @@ nonisolated extension ForgeRegistry: DependencyKey {
       candidates.append(candidate(for: forgeID, authenticatedHosts: hosts))
     }
     return ForgeResolver.resolve(host: remoteHost, override: nil, candidates: candidates)
+  }
+}
+
+extension ForgeRegistry {
+  /// Run repository and forge commands where the checkout and CLI credentials live.
+  /// Local registries keep their injected clients unchanged.
+  func forHost(_ host: RemoteHost?) -> Self {
+    guard let host else { return self }
+    @Dependency(ShellClient.self) var shell
+    let environment = RemoteForgeEnvironment(host: host, base: shell)
+    return Self(
+      resolveForgeID: { root, host in
+        await environment.run { await self.resolveForgeID(root, host) }
+      },
+      client: { id in self.client(id).map { environment.scope($0) } },
+      capabilities: capabilities
+    )
+  }
+}
+
+private struct RemoteForgeEnvironment: Sendable {
+  let git: GitClientDependency
+  let github: GithubCLIClient
+  let gitlab: GitLabCLIClient
+
+  init(host: RemoteHost, base: ShellClient) {
+    let shell = ShellClient.ssh(host: host, base: base)
+    git = .ssh(host: host, base: base)
+    // A local Homebrew path says nothing about the remote host's executables.
+    github = .live(shell: shell, fallbackExecutableURLs: [])
+    gitlab = .live(shell: shell, fallbackExecutableURLs: [], remoteConfiguration: true)
+  }
+
+  @MainActor
+  func run<T>(_ operation: () async throws -> T) async rethrows -> T {
+    try await withDependencies {
+      $0[GitClientDependency.self] = git
+      $0[GithubCLIClient.self] = github
+      $0[GitLabCLIClient.self] = gitlab
+    } operation: {
+      try await operation()
+    }
+  }
+
+  nonisolated func scope(_ client: ForgeClient) -> ForgeClient {
+    ForgeClient(
+      resolveProject: { root in await run { await client.resolveProject(root) } },
+      fetchSummaries: { project, branches in try await run { try await client.fetchSummaries(project, branches) } },
+      fetchDetail: { project, number in try await run { try await client.fetchDetail(project, number) } },
+      mergePullRequest: { root, project, number, strategy in
+        try await run { try await client.mergePullRequest(root, project, number, strategy) }
+      },
+      closePullRequest: { root, project, number in
+        try await run { try await client.closePullRequest(root, project, number) }
+      },
+      markPullRequestReady: { root, project, number in
+        try await run { try await client.markPullRequestReady(root, project, number) }
+      },
+      pullRequestDiff: { project, number in try await run { try await client.pullRequestDiff(project, number) } },
+      latestRun: { root, branch in try await run { try await client.latestRun(root, branch) } },
+      rerunFailedJobs: { root, run in try await self.run { try await client.rerunFailedJobs(root, run) } },
+      failedRunLogs: { root, run in try await self.run { try await client.failedRunLogs(root, run) } },
+      runLogs: { root, run in try await self.run { try await client.runLogs(root, run) } },
+      isAvailable: { await run { await client.isAvailable() } }
+    )
   }
 }

@@ -2004,7 +2004,9 @@ struct RepositoriesFeature {
           let pendingID = providedPendingID ?? WorktreeID("\(WorktreeID.pendingPrefix)\(uuid().uuidString)")
           let previousSelection = state.selectedWorktreeID
           let customization = rejectedBranchName.flatMap { state.pendingCreationCustomizations[repository.id]?[$0] }
-          if let rejectedBranchName { state.dropPendingCustomization(repositoryID: repository.id, branchName: rejectedBranchName) }
+          if let rejectedBranchName {
+            state.dropPendingCustomization(repositoryID: repository.id, branchName: rejectedBranchName)
+          }
           state.pendingWorktrees.append(
             PendingWorktree(
               id: pendingID, repositoryID: repository.id,
@@ -2672,7 +2674,8 @@ struct RepositoriesFeature {
         }
         state.githubIntegrationAvailability = isAvailable ? .available : .unavailable
         guard isAvailable else {
-          for (repositoryID, queued) in state.queuedPullRequestRefreshByRepositoryID {
+          for (repositoryID, queued) in state.queuedPullRequestRefreshByRepositoryID
+          where state.repositories[id: repositoryID]?.host == nil {
             state.pendingPullRequestRefreshByRepositoryID.queuePullRequestRefresh(
               repositoryID: repositoryID,
               repositoryRootURL: queued.repositoryRootURL,
@@ -2680,10 +2683,23 @@ struct RepositoriesFeature {
               trigger: queued.trigger,
             )
           }
-          state.queuedPullRequestRefreshByRepositoryID.removeAll()
-          state.inFlightPullRequestRefreshRepositoryIDs.removeAll()
-          state.inFlightPullRequestBranchSnapshotsByRepositoryID.removeAll()
-          let openFetchCancels = Self.cancelPullRequestOpenFetches(&state)
+          state.queuedPullRequestRefreshByRepositoryID = state.queuedPullRequestRefreshByRepositoryID.filter {
+            state.repositories[id: $0.key]?.host != nil
+          }
+          state.inFlightPullRequestRefreshRepositoryIDs = state.inFlightPullRequestRefreshRepositoryIDs.filter {
+            state.repositories[id: $0]?.host != nil
+          }
+          state.inFlightPullRequestBranchSnapshotsByRepositoryID = state
+            .inFlightPullRequestBranchSnapshotsByRepositoryID.filter {
+              state.repositories[id: $0.key]?.host != nil
+            }
+          let localOpenFetchIDs = state.inFlightPullRequestOpenFetchWorktreeIDs.filter {
+            state.worktree(for: $0)?.host == nil
+          }
+          state.inFlightPullRequestOpenFetchWorktreeIDs.subtract(localOpenFetchIDs)
+          let openFetchCancels = localOpenFetchIDs.map {
+            Effect<Action>.cancel(id: CancelID.pullRequestOpenFetch($0))
+          }
           let clock = clock
           // Each probe re-arms this via `refreshGithubIntegrationAvailability`, so
           // one delayed tick per cycle is enough; the attempt lives in state so the
@@ -2788,7 +2804,8 @@ struct RepositoriesFeature {
       case .repositoryPullRequestRefreshCompleted(let repositoryID):
         state.inFlightPullRequestRefreshRepositoryIDs.remove(repositoryID)
         state.inFlightPullRequestBranchSnapshotsByRepositoryID.removeValue(forKey: repositoryID)
-        guard state.githubIntegrationAvailability == .available,
+        guard
+          Self.pullRequestAvailability(state: state, host: state.repositories[id: repositoryID]?.host) == .available,
           let pending = state.queuedPullRequestRefreshByRepositoryID.removeValue(
             forKey: repositoryID
           )
@@ -2925,12 +2942,8 @@ struct RepositoriesFeature {
         {
           return openURLEffect(url)
         }
-        // A remote repo has no local checkout for `gh` to query (gh-over-ssh is out of scope).
-        guard repository.host == nil else {
-          return .send(.showToast(.info("Pull requests aren't available for remote repositories.")))
-        }
         // Gate on availability, not the settings toggle, so a fetch can't hang on an unusable integration.
-        guard state.githubIntegrationAvailability == .available else {
+        guard Self.pullRequestAvailability(state: state, host: repository.host) == .available else {
           return .send(.showToast(.info("Git forge integration is unavailable.")))
         }
         guard state.inFlightPullRequestOpenFetchWorktreeIDs.insert(worktreeID).inserted else {
@@ -2939,7 +2952,7 @@ struct RepositoriesFeature {
         let repositoryRootURL = repository.rootURL
         let repositoryHost = repository.host
         let branch = worktree.name
-        let forgeRegistry = forgeRegistry
+        let forgeRegistry = forgeRegistry.forHost(repositoryHost)
         return .merge(
           .send(.showToast(.inProgress("Checking for pull request…"))),
           .run { send in
@@ -2976,7 +2989,7 @@ struct RepositoriesFeature {
       case .pullRequestOpenFetchLoaded(let worktreeID, let branch, let pullRequest):
         state.inFlightPullRequestOpenFetchWorktreeIDs.remove(worktreeID)
         // Discard a result that outlived its request (integration torn down, or the worktree renamed/removed).
-        guard state.githubIntegrationAvailability == .available,
+        guard Self.pullRequestAvailability(state: state, host: state.worktree(for: worktreeID)?.host) == .available,
           state.worktree(for: worktreeID)?.name == branch
         else {
           return .send(.dismissToast)
@@ -3636,11 +3649,6 @@ struct RepositoriesFeature {
           else {
             return .none
           }
-          // PR refresh runs `gh` against the local repo; a remote-only repo has
-          // no local checkout to serve it. Skip (gh-over-ssh is out of scope).
-          guard state.repositories[id: repositoryID]?.host == nil else {
-            return .none
-          }
           var seen = Set<String>()
           let branches =
             worktrees
@@ -3668,7 +3676,7 @@ struct RepositoriesFeature {
               )
             )
           }
-          switch state.githubIntegrationAvailability {
+          switch Self.pullRequestAvailability(state: state, host: firstWorktree.host) {
           case .available:
             if state.inFlightPullRequestRefreshRepositoryIDs.contains(repositoryID) {
               state.queuedPullRequestRefreshByRepositoryID.queuePullRequestRefresh(
@@ -4648,7 +4656,8 @@ struct RepositoriesFeature {
         guard !cancelled else { return .none }
         return .merge(
           .send(.worktreeCreationRejected(pendingID: pendingID, message: message, licenseRequired: false)),
-          wasSelected ? .send(.delegate(.selectedWorktreeChanged(state.worktree(for: state.selectedWorktreeID)))) : .none
+          wasSelected
+            ? .send(.delegate(.selectedWorktreeChanged(state.worktree(for: state.selectedWorktreeID)))) : .none
         )
 
       case .createRandomWorktreeSucceeded(
@@ -5052,6 +5061,11 @@ struct RepositoriesFeature {
     return cancels
   }
 
+  private static func pullRequestAvailability(state: State, host: RemoteHost?) -> GithubIntegrationAvailability {
+    if host != nil, state.githubIntegrationAvailability != .disabled { return .available }
+    return state.githubIntegrationAvailability
+  }
+
   private func openURLEffect(_ url: URL) -> Effect<Action> {
     let urlOpener = urlOpener
     return .run { _ in urlOpener.open(url) }
@@ -5072,7 +5086,7 @@ struct RepositoriesFeature {
       let selectedPullRequest = pullRequestsByWorktreeID[selectedWorktreeID] ?? nil,
       selectedPullRequest.state == .open
     else { return .none }
-    let forgeRegistry = forgeRegistry
+    let forgeRegistry = forgeRegistry.forHost(repository.host)
     let repositoryRootURL = repository.rootURL
     let repositoryHost = repository.host
     let number = selectedPullRequest.number
@@ -5109,7 +5123,7 @@ struct RepositoriesFeature {
     worktrees: [Worktree],
     branches: [String]
   ) -> Effect<Action> {
-    let forgeRegistry = forgeRegistry
+    let forgeRegistry = forgeRegistry.forHost(repositoryHost)
     return .run { send in
       guard
         let forgeID = await forgeRegistry.resolveForgeID(repositoryRootURL, repositoryHost),

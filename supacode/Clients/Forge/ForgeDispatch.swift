@@ -13,6 +13,7 @@ nonisolated enum ForgeDispatch {
     send: Send<RepositoriesFeature.Action>,
     unavailableAction: String
   ) async -> (ForgeClient, ForgeCapabilities)? {
+    let registry = registry.forHost(repoHost)
     guard
       let forgeID = await registry.resolveForgeID(repoRoot, repoHost),
       let forge = registry.client(forgeID),

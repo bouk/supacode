@@ -1802,3 +1802,207 @@ struct RemoteWorktreeCreationFeedbackTests {
     #expect(store.state.repositories[id: repo.id]?.worktrees.count == 1)
   }
 }
+
+@MainActor
+struct RemotePullRequestTests {
+  private static let host = RemoteHost(alias: "pr-devbox", username: "alice", port: 2222)
+  private static let main = Worktree(
+    location: .remote(host, workingDirectory: "/srv/pr-repo", repositoryRoot: "/srv/pr-repo"),
+    kind: .git, name: "main", detail: "main"
+  )
+  private static let repository = Repository(
+    location: .remote(host, path: "/srv/pr-repo"), kind: .git, name: "repo", worktrees: [main]
+  )
+
+  private static func shell(commands: LockIsolated<[String]>, missingCLI: Bool = false) -> ShellClient {
+    ShellClient(
+      run: { executable, arguments, directory in
+        #expect(executable.path == "/usr/bin/ssh")
+        #expect(directory == nil)
+        #expect(arguments.contains("alice@pr-devbox"))
+        #expect(arguments.contains("2222"))
+        let command = arguments.last ?? ""
+        commands.withValue { $0.append(command) }
+        let output: String
+        if command.contains("which") {
+          if missingCLI { throw GitClientError.commandFailed(command: "which gh", message: "not installed") }
+          output = "/usr/local/bin/gh"
+        } else if command.contains("repo") && command.contains("owner,name,url") {
+          #expect(command.contains("/srv/pr-repo"))
+          output = #"{"owner":{"login":"owner"},"name":"repo","url":"https://github.com/owner/repo"}"#
+        } else if command.contains("graphql") {
+          output =
+            #"{"data":{"repository":{"branch0":{"nodes":[{"number":42,"title":"Remote PR","state":"OPEN","additions":1,"deletions":0,"isDraft":false,"url":"https://github.com/owner/repo/pull/42","headRefName":"main","headRepository":{"name":"repo","owner":{"login":"owner"}}}]}}}}"#
+        } else if command.contains("diff") {
+          output = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"
+        } else {
+          output = ""
+        }
+        return ShellOutput(stdout: output, stderr: "", exitCode: 0)
+      },
+      runLoginImpl: { _, _, _, _ in
+        Issue.record("SSH commands must use the base non-login runner")
+        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
+      }
+    )
+  }
+
+  private static func state(availability: RepositoriesFeature.GithubIntegrationAvailability = .unavailable)
+    -> RepositoriesFeature.State
+  {
+    var state = RepositoriesFeature.State()
+    state.repositories = [repository]
+    state.setSingleWorktreeSelection(main.id)
+    state.githubIntegrationAvailability = availability
+    state.reconcileSidebarForTesting()
+    return state
+  }
+
+  @Test(.dependencies) func refreshLoadsRemotePRWithoutALocalCLI() async {
+    let commands = LockIsolated<[String]>([])
+    let store = TestStore(initialState: Self.state()) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0[ShellClient.self] = Self.shell(commands: commands)
+      $0.continuousClock = ImmediateClock()
+      $0.githubCLI.resolveRemoteInfo = { _ in
+        Issue.record("Used local gh")
+        return nil
+      }
+    }
+    store.exhaustivity = .off
+    await store.send(
+      .worktreeInfoEvent(
+        .repositoryPullRequestRefresh(
+          repositoryRootURL: Self.repository.rootURL, worktreeIDs: [Self.main.id], trigger: .manual
+        )))
+    #expect(store.state.inFlightPullRequestRefreshRepositoryIDs.contains(Self.repository.id))
+    await store.receive(\.repositoryPullRequestRefreshCompleted)
+    await store.finish()
+    #expect(store.state.sidebarItems[id: Self.main.id]?.pullRequest?.number == 42)
+    #expect(!store.state.inFlightPullRequestRefreshRepositoryIDs.contains(Self.repository.id))
+    #expect(commands.value.contains { $0.contains("graphql") })
+  }
+
+  @Test(.dependencies) func openFetchUsesRemoteCheckout() async {
+    let commands = LockIsolated<[String]>([])
+    let opened = LockIsolated<[URL]>([])
+    let store = TestStore(initialState: Self.state()) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0[ShellClient.self] = Self.shell(commands: commands)
+      $0.continuousClock = ImmediateClock()
+      $0[URLOpenerClient.self].open = { url in opened.withValue { $0.append(url) } }
+    }
+    store.exhaustivity = .off
+    await store.send(.openSelectedWorktreePullRequest)
+    await store.receive(\.pullRequestOpenFetchLoaded)
+    await store.finish()
+    #expect(opened.value.map(\.absoluteString) == ["https://github.com/owner/repo/pull/42"])
+  }
+
+  @Test(.dependencies) func disabledIntegrationDoesNotRunSSH() async {
+    let commands = LockIsolated<[String]>([])
+    let store = TestStore(initialState: Self.state(availability: .disabled)) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0[ShellClient.self] = Self.shell(commands: commands)
+    }
+    await store.send(
+      .worktreeInfoEvent(
+        .repositoryPullRequestRefresh(
+          repositoryRootURL: Self.repository.rootURL, worktreeIDs: [Self.main.id], trigger: .manual
+        )))
+    #expect(commands.value.isEmpty)
+  }
+
+  @Test(.dependencies, arguments: [false, true]) func inspectorActionUsesRemoteCLI(missingCLI: Bool) async {
+    let commands = LockIsolated<[String]>([])
+    var state = Self.state(availability: .disabled)
+    let pullRequest = try! GithubCLIOutput.decode(
+      GithubGraphQLPullRequestResponse.self,
+      from:
+        #"{"data":{"repository":{"branch0":{"nodes":[{"number":42,"title":"Remote PR","state":"OPEN","additions":1,"deletions":0,"isDraft":false,"url":"https://github.com/owner/repo/pull/42","headRefName":"main","headRepository":{"name":"repo","owner":{"login":"owner"}}}]}}}}"#
+    )
+    .pullRequestsByBranch(aliasMap: ["branch0": "main"], owner: "owner", repo: "repo")["main"]!
+    state.setWorktreeInfoForTesting(id: Self.main.id, addedLines: nil, removedLines: nil, pullRequest: pullRequest)
+    let clock = TestClock()
+    let store = TestStore(initialState: state) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0[ShellClient.self] = Self.shell(commands: commands, missingCLI: missingCLI)
+      $0.continuousClock = clock
+    }
+    store.exhaustivity = .off
+    await store.send(.pullRequestAction(Self.main.id, .markReadyForReview))
+    if missingCLI {
+      await store.receive(\.presentAlert)
+      #expect(store.state.alert != nil)
+      #expect(!commands.value.contains { $0.contains("ready") })
+    } else {
+      await store.receive(\.delayedPullRequestRefresh)
+      #expect(commands.value.contains { $0.contains("ready") && $0.contains("/srv/pr-repo") })
+      await clock.advance(by: .seconds(10))
+    }
+    await store.finish()
+  }
+
+  @Test(.dependencies) func diffWindowLoadsOverSSH() async {
+    let commands = LockIsolated<[String]>([])
+    let request = PullRequestDiffRequest(
+      repositoryRootURL: Self.repository.rootURL, repositoryHost: Self.host, number: 42,
+      numberSigil: "#", title: "Remote PR", url: "https://github.com/owner/repo/pull/42"
+    )
+    let store = TestStore(initialState: PullRequestDiffFeature.State(request: request)) {
+      PullRequestDiffFeature()
+    } withDependencies: {
+      $0[ShellClient.self] = Self.shell(commands: commands)
+    }
+    store.exhaustivity = .off
+    await store.send(.task)
+    await store.receive(\.diffResponse.success)
+    #expect(store.state.document?.files.map(\.path) == ["a.txt"])
+    #expect(commands.value.contains { $0.contains("diff") })
+    await store.finish()
+  }
+}
+
+@MainActor
+struct RemoteForgeResolutionTests {
+  @Test(.dependencies) func samePathOnDifferentHostsResolvesIndependently() async {
+    @Shared(.settingsFile) var settings
+    $settings.withLock { $0.global.setForgeIntegrationEnabled(true, forID: "gitlab") }
+    let root = URL(filePath: "/srv/forge-cache-isolation")
+    let githubHost = RemoteHost(alias: "github-devbox")
+    let gitlabHost = RemoteHost(alias: "gitlab-devbox")
+    let commands = LockIsolated<[String]>([])
+    let shell = ShellClient(
+      run: { executable, arguments, directory in
+        #expect(executable.path == "/usr/bin/ssh")
+        #expect(directory == nil)
+        let command = arguments.last ?? ""
+        commands.withValue { $0.append(arguments.joined(separator: " ")) }
+        let output: String
+        if command.contains("--get-url") {
+          output = arguments.contains("github-devbox") ? "git@github.com:owner/repo.git" : "git@gitlab.com:group/repo.git"
+        } else {
+          output = "origin"
+        }
+        return ShellOutput(stdout: output, stderr: "", exitCode: 0)
+      }, runLoginImpl: { _, _, _, _ in
+        Issue.record("Remote resolver used the local login runner")
+        return ShellOutput(stdout: "", stderr: "", exitCode: 0)
+      }
+    )
+    await withDependencies {
+      $0[ShellClient.self] = shell
+      $0[GitClientDependency.self].gitRemote = { _ in Issue.record("Read local Git remote"); return nil }
+    } operation: {
+      let registry = ForgeRegistry.liveValue
+      #expect(await registry.forHost(githubHost).resolveForgeID(root, githubHost) == .github)
+      #expect(await registry.forHost(gitlabHost).resolveForgeID(root, gitlabHost) == .gitlab)
+      #expect(commands.value.contains { $0.contains("github-devbox") && $0.contains("--get-url") })
+      #expect(commands.value.contains { $0.contains("gitlab-devbox") && $0.contains("--get-url") })
+    }
+  }
+}

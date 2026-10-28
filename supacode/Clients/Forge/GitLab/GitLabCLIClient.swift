@@ -38,7 +38,8 @@ nonisolated extension GitLabCLIClient: DependencyKey {
 
   static func live(
     shell: ShellClient = .liveValue,
-    fallbackExecutableURLs: [URL] = ForgeCLIExecutableResolver.defaultFallbackExecutableURLs(executableName: "glab")
+    fallbackExecutableURLs: [URL] = ForgeCLIExecutableResolver.defaultFallbackExecutableURLs(executableName: "glab"),
+    remoteConfiguration: Bool = false
   ) -> GitLabCLIClient {
     let resolver = ForgeCLIExecutableResolver(
       executableName: "glab",
@@ -54,6 +55,25 @@ nonisolated extension GitLabCLIClient: DependencyKey {
       markMergeRequestReady: markMergeRequestReadyFetcher(shell: shell, resolver: resolver),
       isAvailable: isAvailableFetcher(shell: shell, resolver: resolver),
       authenticatedHosts: {
+        if remoteConfiguration {
+          // Expand configuration paths on the host, never against this Mac's HOME.
+          let script = """
+            if [ -n "${GLAB_CONFIG_DIR:-}" ]; then
+              cat "$GLAB_CONFIG_DIR/config.yml"
+            else
+              for path in "$HOME/Library/Application Support/glab-cli/config.yml" \
+                "${XDG_CONFIG_HOME:-$HOME/.config}/glab-cli/config.yml" "$HOME/.config/glab-cli/config.yml"; do
+                if [ -f "$path" ]; then cat "$path"; break; fi
+              done
+            fi
+            """
+          guard
+            let output = try? await shell.run(
+              URL(filePath: "/bin/sh"), ["-c", script], nil
+            )
+          else { return [] }
+          return GitLabConfigHosts.parse(configYAML: output.stdout)
+        }
         guard
           let configURL = GitLabConfigHosts.configFileURL(),
           let configYAML = try? String(contentsOf: configURL, encoding: .utf8)
